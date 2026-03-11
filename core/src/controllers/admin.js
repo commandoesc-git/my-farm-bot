@@ -722,6 +722,127 @@ function startAdminServer(dataProvider) {
         res.json({ ok: true, data: saved });
     });
 
+    // ============ 好友GID管理 API ============
+    function buildKnownFriendGidSettings(accountId) {
+        return {
+            knownFriendGids: store.getKnownFriendGids ? store.getKnownFriendGids(accountId) : [],
+            knownFriendGidSyncCooldownSec: store.getKnownFriendGidSyncCooldownSec
+                ? store.getKnownFriendGidSyncCooldownSec(accountId)
+                : 600,
+        };
+    }
+
+    // 获取已知好友GID设置
+    app.get('/api/friend-known-gids', (req, res) => {
+        const id = getAccId(req);
+        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+
+        // 检查权限
+        if (!checkAccountAccess(req, id)) {
+            return res.status(403).json({ ok: false, error: '无权访问此账号' });
+        }
+
+        try {
+            return res.json({ ok: true, data: buildKnownFriendGidSettings(id) });
+        } catch (e) {
+            return handleApiError(res, e);
+        }
+    });
+
+    // 保存已知好友GID设置
+    app.post('/api/friend-known-gids', (req, res) => {
+        const id = getAccId(req);
+        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+
+        // 检查权限
+        if (!checkAccountAccess(req, id)) {
+            return res.status(403).json({ ok: false, error: '无权访问此账号' });
+        }
+
+        try {
+            const body = (req.body && typeof req.body === 'object') ? req.body : {};
+            if (body.knownFriendGids !== undefined && store.setKnownFriendGids) {
+                store.setKnownFriendGids(id, body.knownFriendGids);
+            }
+            if (body.knownFriendGidSyncCooldownSec !== undefined && store.setKnownFriendGidSyncCooldownSec) {
+                store.setKnownFriendGidSyncCooldownSec(id, body.knownFriendGidSyncCooldownSec);
+            }
+            // 同步配置到 worker 进程
+            if (provider && typeof provider.broadcastConfig === 'function') {
+                provider.broadcastConfig(id);
+            }
+            return res.json({ ok: true, data: buildKnownFriendGidSettings(id) });
+        } catch (e) {
+            return handleApiError(res, e);
+        }
+    });
+
+    // 添加单个好友GID
+    app.post('/api/friend-known-gids/add', (req, res) => {
+        const id = getAccId(req);
+        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+
+        // 检查权限
+        if (!checkAccountAccess(req, id)) {
+            return res.status(403).json({ ok: false, error: '无权访问此账号' });
+        }
+
+        const gid = Number((req.body || {}).gid);
+        if (!Number.isFinite(gid) || gid <= 0) {
+            return res.status(400).json({ ok: false, error: 'GID 无效' });
+        }
+
+        try {
+            const current = store.getKnownFriendGids ? store.getKnownFriendGids(id) : [];
+            const next = Array.isArray(current) ? [...current, gid] : [gid];
+            if (store.setKnownFriendGids) {
+                store.setKnownFriendGids(id, next);
+            }
+            const cooldownSec = (req.body || {}).knownFriendGidSyncCooldownSec;
+            if (cooldownSec !== undefined && store.setKnownFriendGidSyncCooldownSec) {
+                store.setKnownFriendGidSyncCooldownSec(id, cooldownSec);
+            }
+            // 同步配置到 worker 进程
+            if (provider && typeof provider.broadcastConfig === 'function') {
+                provider.broadcastConfig(id);
+            }
+            return res.json({ ok: true, data: buildKnownFriendGidSettings(id) });
+        } catch (e) {
+            return handleApiError(res, e);
+        }
+    });
+
+    // 移除单个好友GID
+    app.post('/api/friend-known-gids/remove', (req, res) => {
+        const id = getAccId(req);
+        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+
+        // 检查权限
+        if (!checkAccountAccess(req, id)) {
+            return res.status(403).json({ ok: false, error: '无权访问此账号' });
+        }
+
+        const gid = Number((req.body || {}).gid);
+        if (!Number.isFinite(gid) || gid <= 0) {
+            return res.status(400).json({ ok: false, error: 'GID 无效' });
+        }
+
+        try {
+            const current = store.getKnownFriendGids ? store.getKnownFriendGids(id) : [];
+            const next = Array.isArray(current) ? current.filter(item => Number(item) !== gid) : [];
+            if (store.setKnownFriendGids) {
+                store.setKnownFriendGids(id, next);
+            }
+            // 同步配置到 worker 进程
+            if (provider && typeof provider.broadcastConfig === 'function') {
+                provider.broadcastConfig(id);
+            }
+            return res.json({ ok: true, data: buildKnownFriendGidSettings(id) });
+        } catch (e) {
+            return handleApiError(res, e);
+        }
+    });
+
     // API: 蔬菜黑名单
     app.get('/api/plant-blacklist', authRequired, (req, res) => {
         try {

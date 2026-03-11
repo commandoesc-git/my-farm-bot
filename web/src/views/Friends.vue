@@ -14,8 +14,31 @@ const friendStore = useFriendStore()
 const statusStore = useStatusStore()
 const toast = useToastStore()
 const { currentAccountId, currentAccount } = storeToRefs(accountStore)
-const { friends, loading, friendLands, friendLandsLoading, blacklist, interactRecords, interactLoading, interactError } = storeToRefs(friendStore)
+const {
+  friends,
+  loading,
+  friendLands,
+  friendLandsLoading,
+  blacklist,
+  interactRecords,
+  interactLoading,
+  interactError,
+  knownFriendGids,
+  knownFriendGidSyncCooldownSec,
+  knownFriendSettingsLoading,
+  knownFriendSettingsSaving,
+} = storeToRefs(friendStore)
 const { status, loading: statusLoading, realtimeConnected } = storeToRefs(statusStore)
+
+const isQqAccount = computed(() => {
+  const acc = currentAccount.value
+  if (!acc) return false
+  const platform = String(acc.platform || 'qq').toLowerCase()
+  return platform === 'qq'
+})
+
+const knownFriendGidCount = computed(() => knownFriendGids.value.length)
+const knownFriendGidSet = computed(() => new Set(knownFriendGids.value.map(Number)))
 
 const TABS = [
   { key: 'friends', label: '好友列表', icon: 'i-carbon-user-multiple' },
@@ -34,6 +57,8 @@ const pendingAction = ref<(() => Promise<void>) | null>(null)
 const avatarErrorKeys = ref<Set<string>>(new Set())
 const searchKeyword = ref('')
 const batchLoading = ref(false)
+const newKnownFriendGid = ref('')
+const localKnownFriendGidSyncCooldownSec = ref(600)
 
 const interactFilter = ref('all')
 const interactFilters = [
@@ -110,6 +135,9 @@ async function loadData() {
       friendStore.fetchFriends(currentAccountId.value)
       friendStore.fetchBlacklist(currentAccountId.value)
       friendStore.fetchInteractRecords(currentAccountId.value)
+      if (isQqAccount.value) {
+        friendStore.fetchKnownFriendSettings(currentAccountId.value)
+      }
     }
   }
 }
@@ -334,6 +362,59 @@ function formatInteractTime(timestamp: number) {
     hour12: false,
   })
 }
+
+function normalizeKnownFriendGidSyncCooldownSec(value: number) {
+  const v = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(v) || v <= 0) return 600
+  return Math.max(30, Math.min(86400, v))
+}
+
+async function handleAddKnownFriendGid() {
+  if (!currentAccountId.value) return
+  const gid = Number.parseInt(String(newKnownFriendGid.value || ''), 10)
+  if (!Number.isFinite(gid) || gid <= 0) {
+    toast.error('请输入有效的 GID')
+    return
+  }
+  const cooldownSec = normalizeKnownFriendGidSyncCooldownSec(localKnownFriendGidSyncCooldownSec.value)
+  await friendStore.addKnownFriendGid(currentAccountId.value, gid, cooldownSec)
+  newKnownFriendGid.value = ''
+  await refreshFriendsAfterKnownGidChange()
+  toast.success(`已加入同步列表: ${gid}`)
+}
+
+async function handleRemoveKnownFriendGid(friend: any, e: Event) {
+  e.stopPropagation()
+  if (!currentAccountId.value) return
+  const gid = Number(friend?.gid) || 0
+  const name = String(friend?.name || `GID ${gid}`).trim()
+  confirmAction(
+    `确定将 ${name} 移出同步列表吗？后续如果最近访客再次命中，这个 GID 仍可被自动同步回来。`,
+    async () => {
+      await friendStore.removeKnownFriendGid(currentAccountId.value!, gid)
+      await refreshFriendsAfterKnownGidChange()
+      toast.success(`已移出同步列表: ${name}`)
+    },
+  )
+}
+
+async function refreshFriendsAfterKnownGidChange() {
+  if (!currentAccountId.value) return
+  await friendStore.fetchFriends(currentAccountId.value)
+}
+
+async function handleSaveKnownFriendSettings() {
+  if (!currentAccountId.value) return
+  const cooldownSec = normalizeKnownFriendGidSyncCooldownSec(localKnownFriendGidSyncCooldownSec.value)
+  await friendStore.saveKnownFriendSettings(currentAccountId.value, {
+    knownFriendGidSyncCooldownSec: cooldownSec,
+  })
+  toast.success('设置已保存')
+}
+
+watch(knownFriendGidSyncCooldownSec, (val) => {
+  localKnownFriendGidSyncCooldownSec.value = val
+})
 </script>
 
 <template>
@@ -417,6 +498,73 @@ function formatInteractTime(timestamp: number) {
 
     <template v-else>
       <div v-if="activeTab === 'friends'" class="space-y-4">
+        <div v-if="currentAccountId && isQqAccount" class="mb-4 border border-amber-200 rounded-lg bg-white p-4 shadow dark:border-amber-700/50 dark:bg-gray-800">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div class="flex items-center gap-2">
+                <div class="i-carbon-user-profile text-lg text-amber-500" />
+                <h3 class="text-lg text-gray-700 font-semibold dark:text-gray-200">
+                  QQ 好友自动同步
+                </h3>
+                <span class="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                  {{ knownFriendGidCount }}
+                </span>
+              </div>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                QQ 新好友接口依赖已知 GID。系统会自动从最近访客补充，进入好友农场明确失败时自动移除失效 GID。
+              </p>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              <button
+                class="rounded bg-amber-100 px-3 py-1.5 text-sm text-amber-700 transition dark:bg-amber-900/30 hover:bg-amber-200 dark:text-amber-400 disabled:opacity-50 dark:hover:bg-amber-900/50"
+                :disabled="knownFriendSettingsLoading"
+                @click="currentAccountId && friendStore.fetchKnownFriendSettings(currentAccountId)"
+              >
+                <div v-if="knownFriendSettingsLoading" class="i-svg-spinners-90-ring-with-bg mr-1 inline-block align-text-bottom" />
+                刷新
+              </button>
+              <button
+                class="rounded bg-green-100 px-3 py-1.5 text-sm text-green-700 transition dark:bg-green-900/30 hover:bg-green-200 dark:text-green-400 disabled:opacity-50 dark:hover:bg-green-900/50"
+                :disabled="knownFriendSettingsSaving"
+                @click="handleSaveKnownFriendSettings"
+              >
+                <div v-if="knownFriendSettingsSaving" class="i-svg-spinners-90-ring-with-bg mr-1 inline-block align-text-bottom" />
+                保存设置
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px_auto]">
+            <div>
+              <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">新增 GID</label>
+              <input
+                v-model="newKnownFriendGid"
+                type="number"
+                placeholder="输入好友 GID"
+                class="w-full border border-gray-300 rounded-lg bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">访客检测入库冷却(秒)</label>
+              <input
+                v-model.number="localKnownFriendGidSyncCooldownSec"
+                type="number"
+                placeholder="600"
+                class="w-full border border-gray-300 rounded-lg bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+            </div>
+            <div class="flex items-end">
+              <button
+                class="rounded bg-green-500 px-4 py-2 text-sm text-white transition hover:bg-green-600 disabled:opacity-50"
+                :disabled="knownFriendSettingsSaving || !newKnownFriendGid"
+                @click="handleAddKnownFriendGid"
+              >
+                新增 GID
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div v-if="friends.length === 0" class="rounded-lg bg-white p-8 text-center text-gray-500 shadow dark:bg-gray-800">
           暂无好友或数据加载失败
         </div>
@@ -521,6 +669,13 @@ function formatInteractTime(timestamp: number) {
                   @click="handleToggleBlacklist(friend, $event)"
                 >
                   {{ blacklist.includes(Number(friend.gid)) ? '移出黑名单' : '加入黑名单' }}
+                </button>
+                <button
+                  v-if="isQqAccount && knownFriendGidSet.has(Number(friend.gid))"
+                  class="rounded bg-amber-100 px-3 py-2 text-sm text-amber-700 transition hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-900/50"
+                  @click="handleRemoveKnownFriendGid(friend, $event)"
+                >
+                  移出同步列表
                 </button>
               </div>
             </div>

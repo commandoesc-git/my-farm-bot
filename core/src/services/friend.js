@@ -4,11 +4,22 @@
 
 const { CONFIG, PlantPhase, PHASE_NAMES } = require('../config/config');
 const { getPlantName, getPlantById, getSeedImageBySeedId } = require('../config/gameConfig');
-const { isAutomationOn, getFriendQuietHours, getFriendBlacklist, setFriendBlacklist, getPlantBlacklist } = require('../models/store');
+const { parentPort } = require('node:worker_threads');
+const {
+    isAutomationOn,
+    getFriendQuietHours,
+    getFriendBlacklist,
+    setFriendBlacklist,
+    getPlantBlacklist,
+    getKnownFriendGids,
+    getKnownFriendGidSyncCooldownSec,
+    applyConfigSnapshot,
+} = require('../models/store');
 const { sendMsgAsync, getUserState, networkEvents } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, toTimeSec, getServerTimeSec, log, logWarn, sleep } = require('../utils/utils');
 const { getCurrentPhase, setOperationLimitsCallback, buildLandMap, getDisplayLandContext, isOccupiedSlaveLand } = require('./farm');
+const { getInteractRecords } = require('./interact');
 const { createScheduler } = require('./scheduler');
 const { recordOperation } = require('./stats');
 const { sellAllFruits } = require('./warehouse');
@@ -22,7 +33,16 @@ const friendScheduler = createScheduler('friend');
 
 const operationLimits = new Map();
 
-// 操作类型名称映射
+const QQ_FRIEND_LIST_BATCH_SIZE = 35;
+const DEFAULT_QQ_VISITOR_GID_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const MIN_QQ_VISITOR_GID_SYNC_RETRY_MS = 30 * 1000;
+const MAX_QQ_VISITOR_GID_SYNC_RETRY_MS = 2 * 60 * 1000;
+const INVALID_KNOWN_FRIEND_GID_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+let canGetHelpExp = true;
+let helpAutoDisabledByLimit = false;
+let lastVisitorGidSyncAt = 0;
+const invalidKnownFriendGidCooldownUntil = new Map();
 const OP_NAMES = {
     10001: '收获',
     10002: '铲除',
@@ -34,8 +54,367 @@ const OP_NAMES = {
     10008: '偷菜',
 };
 
-let canGetHelpExp = true;
-let helpAutoDisabledByLimit = false;
+function postToMaster(payload) {
+    try {
+        if (process.send) {
+            process.send(payload);
+            return true;
+        }
+        if (parentPort && typeof parentPort.postMessage === 'function') {
+            parentPort.postMessage(payload);
+            return true;
+        }
+    } catch {}
+    return false;
+}
+
+function pruneInvalidKnownFriendGidCooldown(nowMs = Date.now()) {
+    for (const [gid, until] of invalidKnownFriendGidCooldownUntil.entries()) {
+        if (!gid || until <= nowMs) invalidKnownFriendGidCooldownUntil.delete(gid);
+    }
+}
+
+function clearInvalidKnownFriendGidMarks(gids) {
+    for (const gid of normalizeFriendGids(gids)) {
+        invalidKnownFriendGidCooldownUntil.delete(gid);
+    }
+}
+
+function markKnownFriendGidInvalid(friendGid, nowMs = Date.now()) {
+    const gid = toNum(friendGid);
+    if (!gid) return;
+    invalidKnownFriendGidCooldownUntil.set(gid, nowMs + INVALID_KNOWN_FRIEND_GID_COOLDOWN_MS);
+}
+
+function getInvalidKnownFriendGidSet(nowMs = Date.now()) {
+    pruneInvalidKnownFriendGidCooldown(nowMs);
+    return new Set(invalidKnownFriendGidCooldownUntil.keys());
+}
+
+function getKnownFriendGidSyncIntervalMs() {
+    const sec = Number(getKnownFriendGidSyncCooldownSec ? getKnownFriendGidSyncCooldownSec() : 0);
+    if (!Number.isFinite(sec) || sec <= 0) return DEFAULT_QQ_VISITOR_GID_SYNC_INTERVAL_MS;
+    return Math.max(30 * 1000, sec * 1000);
+}
+
+function getKnownFriendGidSyncRetryMs() {
+    const intervalMs = getKnownFriendGidSyncIntervalMs();
+    return Math.max(MIN_QQ_VISITOR_GID_SYNC_RETRY_MS, Math.min(intervalMs, MAX_QQ_VISITOR_GID_SYNC_RETRY_MS));
+}
+
+function normalizeFriendGids(values) {
+    const normalized = [];
+    for (const item of (Array.isArray(values) ? values : [])) {
+        const value = toNum(item);
+        if (value <= 0) continue;
+        if (normalized.includes(value)) continue;
+        normalized.push(value);
+    }
+    return normalized;
+}
+
+function extractReplyFriends(reply) {
+    if (Array.isArray(reply && reply.game_friends)) return reply.game_friends;
+    if (Array.isArray(reply && reply.gameFriends)) return reply.gameFriends;
+    return [];
+}
+
+function dedupeFriendsByGid(friends) {
+    const result = [];
+    const seen = new Set();
+    for (const friend of (Array.isArray(friends) ? friends : [])) {
+        const gid = toNum(friend && friend.gid);
+        if (gid <= 0 || seen.has(gid)) continue;
+        seen.add(gid);
+        result.push(friend);
+    }
+    return result;
+}
+
+function buildFriendReply(friends) {
+    const list = dedupeFriendsByGid(friends);
+    return {
+        game_friends: list,
+        gameFriends: list,
+    };
+}
+
+function syncKnownFriendGidsFromFriends(friends) {
+    const fetchedGids = normalizeFriendGids((Array.isArray(friends) ? friends : []).map(friend => friend && friend.gid));
+    if (fetchedGids.length === 0) return [];
+
+    clearInvalidKnownFriendGidMarks(fetchedGids);
+
+    const current = normalizeFriendGids(getKnownFriendGids());
+    const merged = normalizeFriendGids([...current, ...fetchedGids]);
+    if (merged.length === current.length && merged.every((gid, index) => gid === current[index])) {
+        return merged;
+    }
+
+    applyConfigSnapshot({ knownFriendGids: merged }, { persist: false });
+    const sent = postToMaster({
+        type: 'known_friend_gids_sync',
+        gids: merged,
+    });
+    if (!sent) {
+        applyConfigSnapshot({ knownFriendGids: merged }, { persist: true });
+    }
+    return merged;
+}
+
+function getEffectiveKnownQqFriendGids() {
+    const currentKnownGids = normalizeFriendGids(getKnownFriendGids());
+    clearInvalidKnownFriendGidMarks(currentKnownGids);
+
+    const invalidGidSet = getInvalidKnownFriendGidSet();
+    return normalizeFriendGids([
+        ...currentKnownGids,
+        ...getFriendBlacklist(),
+    ]).filter(gid => !invalidGidSet.has(gid));
+}
+
+async function syncKnownFriendGidsFromRecentVisitors(force = false) {
+    const now = Date.now();
+    const interval = lastVisitorGidSyncAt > 0 ? getKnownFriendGidSyncIntervalMs() : 0;
+    if (!force && interval > 0 && now - lastVisitorGidSyncAt < interval) {
+        return getEffectiveKnownQqFriendGids();
+    }
+
+    try {
+        const records = await getInteractRecords();
+        const invalidGidSet = getInvalidKnownFriendGidSet(now);
+        const visitorGids = normalizeFriendGids(
+            (Array.isArray(records) ? records : []).map(record => record && record.visitorGid),
+        ).filter(gid => !invalidGidSet.has(gid));
+        lastVisitorGidSyncAt = now;
+
+        if (visitorGids.length === 0) {
+            return getEffectiveKnownQqFriendGids();
+        }
+
+        const merged = normalizeFriendGids([
+            ...getKnownFriendGids(),
+            ...visitorGids,
+        ]);
+        const current = normalizeFriendGids(getKnownFriendGids());
+        const addedCount = merged.filter(gid => !current.includes(gid)).length;
+        if (addedCount > 0) {
+            applyConfigSnapshot({ knownFriendGids: merged }, { persist: false });
+            const sent = postToMaster({
+                type: 'known_friend_gids_sync',
+                gids: merged,
+            });
+            if (!sent) {
+                applyConfigSnapshot({ knownFriendGids: merged }, { persist: true });
+            }
+            log('好友', `已从最近访客自动补充 ${addedCount} 个 GID，当前已知好友 GID 共 ${merged.length} 个`, {
+                module: 'friend',
+                event: 'visitor_gid_sync',
+                result: 'ok',
+                addedFromVisitors: addedCount,
+                totalKnownGids: merged.length,
+            });
+        }
+        return normalizeFriendGids([
+            ...merged,
+            ...getFriendBlacklist(),
+        ]);
+    } catch (e) {
+        const retryMs = getKnownFriendGidSyncRetryMs();
+        const intervalMs = getKnownFriendGidSyncIntervalMs();
+        if (now - lastVisitorGidSyncAt >= retryMs) {
+            lastVisitorGidSyncAt = now - (intervalMs - retryMs);
+        }
+        logWarn('好友', `同步最近访客 GID 失败: ${e.message}`, {
+            module: 'friend',
+            event: 'visitor_gid_sync',
+            result: 'error',
+        });
+        return getEffectiveKnownQqFriendGids();
+    }
+}
+
+function removeKnownFriendGid(friendGid, friendName, reason = '') {
+    const gid = toNum(friendGid);
+    if (!gid) return false;
+
+    const current = normalizeFriendGids(getKnownFriendGids());
+    const next = current.filter(item => item !== gid);
+    markKnownFriendGidInvalid(gid);
+    if (next.length !== current.length) {
+        applyConfigSnapshot({ knownFriendGids: next }, { persist: false });
+    }
+
+    const sent = postToMaster({
+        type: 'known_friend_gid_remove',
+        gid,
+        friendName: friendName || `GID:${gid}`,
+        reason: String(reason || ''),
+    });
+    if (!sent && next.length !== current.length) {
+        applyConfigSnapshot({ knownFriendGids: next }, { persist: true });
+    }
+
+    logWarn('好友', `检测到失效好友 GID，已自动移除: ${friendName || `GID:${gid}`}`, {
+        module: 'friend',
+        event: 'known_friend_gid_remove',
+        result: 'auto_removed',
+        friendName: friendName || `GID:${gid}`,
+        friendGid: gid,
+        reason: String(reason || ''),
+    });
+    return true;
+}
+
+function isEnterFarmBannedError(error) {
+    const message = String((error && error.message) || error || '');
+    if (!message) return false;
+    return message.includes('1002003');
+}
+
+function parseRpcErrorCode(error) {
+    const message = String((error && error.message) || error || '');
+    const match = message.match(/code=(\d+)/i);
+    return match ? (Number.parseInt(match[1], 10) || 0) : 0;
+}
+
+function isTransientNetworkError(error) {
+    const message = String((error && error.message) || error || '');
+    if (!message) return false;
+    return [
+        '连接未打开',
+        '请求超时',
+        '请求已中断',
+        '连接关闭',
+        '连接已在加密途中关闭',
+        'worker exited',
+    ].some(keyword => message.includes(keyword));
+}
+
+function isInvalidFriendAccessError(error) {
+    const message = String((error && error.message) || error || '');
+    if (!message || isEnterFarmBannedError(error) || isTransientNetworkError(error)) {
+        return false;
+    }
+
+    const lowerMessage = message.toLowerCase();
+    const hasInvalidKeyword = [
+        '无效',
+        '不存在',
+        '删除',
+        '关系',
+        'not found',
+        'invalid',
+        'not friend',
+        'friend',
+    ].some(keyword => lowerMessage.includes(keyword.toLowerCase()));
+
+    return hasInvalidKeyword && parseRpcErrorCode(error) > 0;
+}
+
+function addFriendToBlacklist(friendGid, friendName, reason = '') {
+    const gid = toNum(friendGid);
+    if (!gid) return false;
+    const currentList = getFriendBlacklist();
+    const current = Array.isArray(currentList) ? currentList : [];
+    if (current.includes(gid)) return false;
+
+    const sent = postToMaster({
+        type: 'friend_blacklist_add',
+        gid,
+        friendName: friendName || `GID:${gid}`,
+        reason: String(reason || ''),
+    });
+    if (!sent) return false;
+
+    logWarn('好友', `检测到封禁好友，已自动加入黑名单: ${friendName || `GID:${gid}`}`, {
+        module: 'friend',
+        event: '加黑名单',
+        result: 'auto_blocked',
+        friendName: friendName || `GID:${gid}`,
+        friendGid: gid,
+        reason: String(reason || ''),
+    });
+    return true;
+}
+
+function handleFriendEnterError(friendGid, friendName, error) {
+    const gid = toNum(friendGid);
+    const displayName = String(friendName || '').trim() || `GID:${gid}`;
+    const reason = String((error && error.message) || error || '');
+    if (isEnterFarmBannedError(error)) {
+        addFriendToBlacklist(gid, displayName, reason);
+        return { handled: true, kind: 'blacklist' };
+    }
+    if (isInvalidFriendAccessError(error)) {
+        removeKnownFriendGid(gid, displayName, reason);
+        return { handled: true, kind: 'invalid_removed' };
+    }
+    return { handled: false, kind: 'error' };
+}
+
+async function fetchQqFriendsByKnownGids() {
+    if (!types.GetGameFriendsRequest || !types.GetAllFriendsReply) {
+        throw new Error('GetGameFriends 接口类型未加载');
+    }
+
+    const knownGids = getEffectiveKnownQqFriendGids();
+    if (knownGids.length === 0) {
+        return [];
+    }
+
+    const allFriends = [];
+    for (let i = 0; i < knownGids.length; i += QQ_FRIEND_LIST_BATCH_SIZE) {
+        const batch = knownGids.slice(i, i + QQ_FRIEND_LIST_BATCH_SIZE);
+        const body = types.GetGameFriendsRequest.encode(types.GetGameFriendsRequest.create({
+            gids: batch.map(gid => toLong(gid)),
+        })).finish();
+        try {
+            const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetGameFriends', body);
+            const reply = types.GetAllFriendsReply.decode(replyBody);
+            allFriends.push(...extractReplyFriends(reply));
+        } catch (e) {
+            logWarn('好友', `QQ 新好友接口分批请求失败(${i + 1}-${i + batch.length}/${knownGids.length}): ${e.message}`, {
+                module: 'friend',
+                event: 'friend_list_fetch',
+                result: 'error',
+                method: 'GetGameFriends',
+                batchSize: batch.length,
+            });
+        }
+        if (i + QQ_FRIEND_LIST_BATCH_SIZE < knownGids.length) {
+            await sleep(100);
+        }
+    }
+
+    return dedupeFriendsByGid(allFriends);
+}
+
+async function fetchQqFriendsByLegacyMethod() {
+    const errors = [];
+
+    try {
+        const syncReq = types.SyncAllRequest || types.SyncAllFriendsRequest;
+        const syncRep = types.SyncAllReply || types.SyncAllFriendsReply;
+        if (!syncReq || !syncRep) throw new Error('SyncAll 接口类型未加载');
+        const body = syncReq.encode(syncReq.create({ open_ids: [] })).finish();
+        const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'SyncAll', body);
+        return extractReplyFriends(syncRep.decode(replyBody));
+    } catch (e) {
+        errors.push(`SyncAll: ${e.message}`);
+    }
+
+    try {
+        if (!types.GetAllFriendsRequest || !types.GetAllFriendsReply) throw new Error('GetAll 接口类型未加载');
+        const body = types.GetAllFriendsRequest.encode(types.GetAllFriendsRequest.create({})).finish();
+        const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetAll', body);
+        return extractReplyFriends(types.GetAllFriendsReply.decode(replyBody));
+    } catch (e) {
+        errors.push(`GetAll: ${e.message}`);
+    }
+
+    throw new Error(errors.join(' | '));
+}
 
 function parseTimeToMinutes(timeStr) {
     const m = String(timeStr || '').match(/^(\d{1,2}):(\d{1,2})$/);
@@ -62,32 +441,38 @@ function inFriendQuietHours(now = new Date()) {
 
 // ============ 好友 API ============
 async function getAllFriends() {
-    // QQ 平台使用 SyncAll，微信平台使用 GetAll
     const isQQ = CONFIG.platform === 'qq';
-
     if (isQQ) {
-        // QQ 平台：使用 SyncAll（传入空 open_ids 数组获取所有好友）
-        const requestObj = types.SyncAllFriendsRequest.create({ open_ids: [] });
-        //console.log('[DEBUG] SyncAllFriends 请求对象 (QQ平台):', JSON.stringify(requestObj, null, 2));
+        await syncKnownFriendGidsFromRecentVisitors();
+        const friendsFromKnownGids = await fetchQqFriendsByKnownGids();
+        if (friendsFromKnownGids.length > 0) {
+            syncKnownFriendGidsFromFriends(friendsFromKnownGids);
+            return buildFriendReply(friendsFromKnownGids);
+        }
 
-        const body = types.SyncAllFriendsRequest.encode(requestObj).finish();
-        //console.log('[DEBUG] SyncAllFriends 编码后字节长度:', body.length);
-        //console.log('[DEBUG] SyncAllFriends 编码后字节(hex):', Buffer.from(body).toString('hex'));
-
-        const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'SyncAll', body);
-        return types.SyncAllFriendsReply.decode(replyBody);
-    } else {
-        // 微信平台：使用 GetAll
-        const requestObj = types.GetAllFriendsRequest.create({});
-        //console.log('[DEBUG] GetAllFriends 请求对象 (微信平台):', JSON.stringify(requestObj, null, 2));
-
-        const body = types.GetAllFriendsRequest.encode(requestObj).finish();
-        //console.log('[DEBUG] GetAllFriends 编码后字节长度:', body.length);
-        //console.log('[DEBUG] GetAllFriends 编码后字节(hex):', Buffer.from(body).toString('hex'));
-
-        const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetAll', body);
-        return types.GetAllFriendsReply.decode(replyBody);
+        try {
+            const legacyFriends = dedupeFriendsByGid(await fetchQqFriendsByLegacyMethod());
+            if (legacyFriends.length > 0) {
+                syncKnownFriendGidsFromFriends(legacyFriends);
+            } else if (getEffectiveKnownQqFriendGids().length === 0) {
+                logWarn('好友', 'QQ 好友列表为空；若近期接口已切到 GetGameFriends，请先在好友页维护已知好友 GID 列表', {
+                    module: 'friend',
+                    event: 'friend_list_fetch',
+                    result: 'empty',
+                });
+            }
+            return buildFriendReply(legacyFriends);
+        } catch (e) {
+            if (getEffectiveKnownQqFriendGids().length === 0) {
+                throw new Error(`QQ 好友列表获取失败，请先在好友页维护已知好友 GID 列表。${e.message}`);
+            }
+            throw e;
+        }
     }
+
+    const body = types.GetAllFriendsRequest.encode(types.GetAllFriendsRequest.create({})).finish();
+    const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetAll', body);
+    return types.GetAllFriendsReply.decode(replyBody);
 }
 
 async function acceptFriends(gids) {
@@ -672,6 +1057,13 @@ async function doFriendOperation(friendGid, opType) {
     try {
         enterReply = await enterFriendFarm(gid);
     } catch (e) {
+        const handled = handleFriendEnterError(gid, `GID:${gid}`, e);
+        if (handled.handled && handled.kind === 'blacklist') {
+            return { ok: true, opType, count: 0, message: '好友已自动加入黑名单' };
+        }
+        if (handled.handled && handled.kind === 'invalid_removed') {
+            return { ok: true, opType, count: 0, message: '好友 GID 已失效，已自动移出已知列表' };
+        }
         return { ok: false, message: `进入好友农场失败: ${e.message}`, opType };
     }
 
@@ -782,49 +1174,27 @@ async function doFriendOperation(friendGid, opType) {
 async function visitFriend(friend, totalActions, myGid, accountId) {
     const { gid, name } = friend;
 
-    log('好友', `开始巡查: ${name}`, {
-        module: 'friend', event: '开始巡查好友', friendName: name, friendGid: gid
-    });
-
-    // 检查好友黑名单
-    const friendBlacklist = getFriendBlacklist(accountId);
-    const friendId = toNum(gid);
-    if (friendBlacklist && friendBlacklist.includes(friendId)) {
-        log('好友', `${name} 被好友黑名单过滤跳过`, {
-            module: 'friend', event: '好友黑名单跳过', friendName: name, friendGid: gid
-        });
-        return;
-    }
-
     let enterReply;
     try {
         enterReply = await enterFriendFarm(gid);
     } catch (e) {
-        logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
-            module: 'friend', event: '进入农场失败', result: 'error', friendName: name, friendGid: gid
-        });
-        // 检查是否是账号被封禁错误 (code=1002003)
-        if (e.message && e.message.includes('1002003')) {
-            logWarn('好友', `${name} 已被封禁，自动加入黑名单`, {
-                module: 'friend', event: '自动加入黑名单', friendName: name, friendGid: gid
-            });
-            // 获取当前黑名单并添加该好友
-            const currentBlacklist = getFriendBlacklist(accountId);
-            if (!currentBlacklist.includes(gid)) {
-                currentBlacklist.push(gid);
-                setFriendBlacklist(accountId, currentBlacklist);
-                log('好友', `${name} 已自动加入好友黑名单`, {
-                    module: 'friend', event: '已加入黑名单', friendName: name, friendGid: gid
-                });
-            }
+        const handled = handleFriendEnterError(gid, name, e);
+        if (handled.handled && handled.kind === 'blacklist') {
+            return { acted: false, entered: false };
         }
-        return;
+        if (handled.handled && handled.kind === 'invalid_removed') {
+            return { acted: false, entered: false };
+        }
+        logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
+            module: 'friend', event: 'enter_farm', result: 'error', friendName: name, friendGid: gid
+        });
+        return { acted: false, entered: false };
     }
 
     const lands = enterReply.lands || [];
     if (lands.length === 0) {
         await leaveFriendFarm(gid);
-        return;
+        return { acted: false, entered: true };
     }
 
     const plantBlacklist = getPlantBlacklist(accountId);
@@ -932,11 +1302,12 @@ async function visitFriend(friend, totalActions, myGid, accountId) {
 
     if (actions.length > 0) {
         log('好友', `${name}: ${actions.join('/')}`, {
-            module: 'friend', event: '巡查好友完成', result: 'ok', friendName: name, friendGid: gid, actions
+            module: 'friend', event: 'visit_friend', result: 'ok', friendName: name, friendGid: gid, actions
         });
     }
 
     await leaveFriendFarm(gid);
+    return { acted: actions.length > 0, entered: true };
 }
 
 // ============ 仅偷菜 ============
@@ -948,31 +1319,20 @@ async function visitFriendForSteal(friend, totalActions, myGid, accountId) {
     try {
         enterReply = await enterFriendFarm(gid);
     } catch (e) {
-        logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
-            module: 'friend', event: '进入农场失败', result: 'error', friendName: name, friendGid: gid
-        });
-        // 检查是否是账号被封禁错误 (code=1002003)
-        if (e.message && e.message.includes('1002003')) {
-            logWarn('好友', `${name} 已被封禁，自动加入黑名单`, {
-                module: 'friend', event: '自动加入黑名单', friendName: name, friendGid: gid
-            });
-            // 获取当前黑名单并添加该好友
-            const currentBlacklist = getFriendBlacklist(accountId);
-            if (!currentBlacklist.includes(gid)) {
-                currentBlacklist.push(gid);
-                setFriendBlacklist(accountId, currentBlacklist);
-                log('好友', `${name} 已自动加入好友黑名单`, {
-                    module: 'friend', event: '已加入黑名单', friendName: name, friendGid: gid
-                });
-            }
+        const handled = handleFriendEnterError(gid, name, e);
+        if (handled.handled) {
+            return { acted: false, entered: false };
         }
-        return;
+        logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
+            module: 'friend', event: 'enter_farm', result: 'error', friendName: name, friendGid: gid
+        });
+        return { acted: false, entered: false };
     }
 
     const lands = enterReply.lands || [];
     if (lands.length === 0) {
         await leaveFriendFarm(gid);
-        return;
+        return { acted: false, entered: true };
     }
 
     const plantBlacklist = getPlantBlacklist(accountId);
@@ -1066,49 +1426,37 @@ async function visitFriendForSteal(friend, totalActions, myGid, accountId) {
 
     if (actions.length > 0) {
         log('好友', `${name}: ${actions.join('/')}`, {
-            module: 'friend', event: '偷菜好友完成', result: 'ok', friendName: name, friendGid: gid, actions
+            module: 'friend', event: 'steal_friend', result: 'ok', friendName: name, friendGid: gid, actions
         });
     }
 
     await leaveFriendFarm(gid);
+    return { acted: actions.length > 0, entered: true };
 }
 
 // ============ 仅帮助 ============
 
-// async function visitFriendForHelp(friend, totalActions, myGid, accountId) {
 async function visitFriendForHelp(friend, totalActions, myGid, accountId, ignoreExpLimit = false) {
     const { gid, name } = friend;
 
-    // const stopWhenExpLimit = !!isAutomationOn('friend_help_exp_limit');
     const stopWhenExpLimit = !!isAutomationOn('friend_help_exp_limit') && !ignoreExpLimit;
     if (!stopWhenExpLimit) canGetHelpExp = true;
     if (stopWhenExpLimit && !canGetHelpExp) {
-        return;
+        return { acted: false, entered: false };
     }
 
     let enterReply;
     try {
         enterReply = await enterFriendFarm(gid);
     } catch (e) {
-        logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
-            module: 'friend', event: '进入农场失败', result: 'error', friendName: name, friendGid: gid
-        });
-        // 检查是否是账号被封禁错误 (code=1002003)
-        if (e.message && e.message.includes('1002003')) {
-            logWarn('好友', `${name} 已被封禁，自动加入黑名单`, {
-                module: 'friend', event: '自动加入黑名单', friendName: name, friendGid: gid
-            });
-            // 获取当前黑名单并添加该好友
-            const currentBlacklist = getFriendBlacklist(accountId);
-            if (!currentBlacklist.includes(gid)) {
-                currentBlacklist.push(gid);
-                setFriendBlacklist(accountId, currentBlacklist);
-                log('好友', `${name} 已自动加入好友黑名单`, {
-                    module: 'friend', event: '已加入黑名单', friendName: name, friendGid: gid
-                });
-            }
+        const handled = handleFriendEnterError(gid, name, e);
+        if (handled.handled) {
+            return { acted: false, entered: false };
         }
-        return;
+        logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
+            module: 'friend', event: 'enter_farm', result: 'error', friendName: name, friendGid: gid
+        });
+        return { acted: false, entered: false };
     }
 
     const lands = enterReply.lands || [];
@@ -1148,27 +1496,24 @@ async function visitFriendForHelp(friend, totalActions, myGid, accountId, ignore
 
     if (actions.length > 0) {
         log('好友', `${name}: ${actions.join('/')}`, {
-            module: 'friend', event: '帮助好友完成', result: 'ok', friendName: name, friendGid: gid, actions
+            module: 'friend', event: 'help_friend', result: 'ok', friendName: name, friendGid: gid, actions
         });
     }
 
-    log('好友', `${name}: 准备离开农场`, { module: 'friend', event: '准备离开农场', friendName: name, friendGid: gid });
     await leaveFriendFarm(gid);
-    log('好友', `${name}: 已离开农场`, { module: 'friend', event: '已离开农场', friendName: name, friendGid: gid });
+    return { acted: actions.length > 0, entered: true };
 }
 
 // ============ 好友巡查主循环 ============
 
 async function checkFriends(options = {}) {
     const state = getUserState();
-    // 首先检查主开关，如果未开启则直接返回
     if (!isAutomationOn('friend')) return false;
 
     const helpEnabled = !!isAutomationOn('friend_help');
     const stealEnabled = !!isAutomationOn('friend_steal');
     const badEnabled = !!isAutomationOn('friend_bad');
     
-    // 如果指定了只执行特定操作，则覆盖配置
     const onlyHelp = options.onlyHelp || false;
     const onlySteal = options.onlySteal || false;
     const onlyBad = options.onlyBad || false;
@@ -1187,19 +1532,18 @@ async function checkFriends(options = {}) {
 
     try {
         const friendsReply = await getAllFriends();
-        const friends = friendsReply.game_friends || [];
+        const friends = extractReplyFriends(friendsReply);
         if (friends.length === 0) {
-            log('好友', '没有好友', { module: 'friend', event: '扫描好友', result: 'empty' });
+            log('好友', '没有好友', { module: 'friend', event: 'friend_scan', result: 'empty' });
             return false;
         }
 
         const blacklist = new Set(getFriendBlacklist());
 
-        const stealFriends = [];      // 有可偷的好友
-        const helpFriends = [];       // 有需要帮助的好友
+        const stealFriends = [];
+        const helpFriends = [];
         const visitedGids = new Set();
 
-        // 第一阶段：扫描所有好友，分类整理
         for (const f of friends) {
             const gid = toNum(f.gid);
             if (gid === state.gid) continue;
@@ -1387,6 +1731,7 @@ function startFriendCheckLoop(options = {}) {
 function stopFriendCheckLoop() {
     friendLoopRunning = false;
     externalSchedulerMode = false;
+    invalidKnownFriendGidCooldownUntil.clear();
     networkEvents.off('friendApplicationReceived', onFriendApplicationReceived);
     friendScheduler.clearAll();
 }
@@ -1472,9 +1817,9 @@ async function runBadOnceOnStartup() {
 
     try {
         const friendsReply = await getAllFriends();
-        const friends = friendsReply.game_friends || [];
+        const friends = extractReplyFriends(friendsReply);
         if (friends.length === 0) {
-            log('好友', '没有好友，放虫放草结束', { module: 'friend', event: '放虫放草无好友' });
+            log('好友', '没有好友，放虫放草结束', { module: 'friend', event: 'bad_no_friends' });
             return;
         }
 
