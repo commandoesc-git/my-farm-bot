@@ -466,6 +466,8 @@ function registerUser(username, password, cardCode) {
 
     saveUsers();
     saveCards();
+    
+    clearFailedAttempts(username);
 
     return { ok: true, user: { username: newUser.username, role: newUser.role, card: newUser.card, accountLimit: newUser.accountLimit } };
 }

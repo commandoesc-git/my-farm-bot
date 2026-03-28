@@ -1302,13 +1302,18 @@ async function handleTestOffline() {
                 label="化肥类型"
                 :options="fertilizerBuyTypeOptions"
               />
-              <BaseInput
-                v-model.number="localAutomationSettings.fertilizerBuyCount"
-                label="购买数量 (0=不限)"
-                type="number"
-                min="0"
-                max="10000"
-              />
+              <div class="flex items-end gap-2">
+                <BaseInput
+                  v-model.number="localAutomationSettings.fertilizerBuyCount"
+                  label="购买数量 (0=不限)"
+                  type="number"
+                  min="0"
+                  max="10000"
+                />
+                <span class="text-xs text-red-500 whitespace-nowrap pb-2">
+                  该功能为一次性功能，选择后点击下方保存就算购买一次
+                </span>
+              </div>
             </div>
 
             <div v-if="localAutomationSettings.automation.friend" class="flex flex-wrap gap-4 rounded bg-blue-50 p-3 text-sm dark:bg-blue-900/20">

@@ -24,17 +24,22 @@ const rateLimitRemaining = ref(0)
 
 const cardClaimEnabled = ref(false)
 const cardClaimLoading = ref(false)
+const showClaimModal = ref(false)
+const claimModalContent = ref({
+  success: true,
+  title: '',
+  message: '',
+  cardCode: '',
+  days: 0
+})
 
 const passwordStrength = computed(() => {
   const pwd = password.value
-  if (!pwd) return { score: 0, level: '', suggestions: [], valid: false }
+  if (!pwd) return { score: 0, level: '', valid: false }
   
   let score = 0
-  const suggestions: string[] = []
   
   if (pwd.length >= 6) score++
-  else suggestions.push('至少6位')
-  
   if (pwd.length >= 10) score++
   
   let typeCount = 0
@@ -44,7 +49,6 @@ const passwordStrength = computed(() => {
   if (/[!@#$%^&*(),.?":{}|<>_\-+=\[\]\\;'/`~]/.test(pwd)) typeCount++
   
   if (typeCount >= 2) score += 2
-  else suggestions.push('需包含大写、小写、数字、特殊符号中的至少两种')
   
   if (typeCount >= 3) score++
   if (typeCount >= 4) score++
@@ -52,14 +56,13 @@ const passwordStrength = computed(() => {
   const commonPasswords = ['password', '123456', 'qwerty', 'abc123', '111111']
   if (commonPasswords.some(p => pwd.toLowerCase().includes(p))) {
     score = Math.max(0, score - 2)
-    suggestions.push('避免常见密码')
   }
   
   const level = score <= 2 ? '弱' : score <= 4 ? '中' : score <= 6 ? '强' : '非常强'
   const color = score <= 2 ? '#ef5350' : score <= 4 ? '#ffa726' : score <= 6 ? '#66bb6a' : '#43a047'
   const valid = pwd.length >= 6 && typeCount >= 2
   
-  return { score, level, suggestions, color, valid, typeCount }
+  return { score, level, color, valid }
 })
 
 const usernameValid = computed(() => {
@@ -100,7 +103,7 @@ function validateForm(): boolean {
     }
     
     if (!passwordStrength.value.valid) {
-      error.value = '密码强度不足：' + passwordStrength.value.suggestions.join('、')
+      error.value = '密码强度不足：需包含大写字母、小写字母、数字、特殊符号中的至少两种'
       return false
     }
     
@@ -214,22 +217,44 @@ async function claimFreeCard() {
     
     if (res.data.ok) {
       cardCode.value = res.data.cardCode
-      success.value = `🎉 成功领取 ${res.data.days} 天卡密！已自动填入卡密输入框`
-      setTimeout(() => {
-        success.value = ''
-      }, 3000)
+      claimModalContent.value = {
+        success: true,
+        title: '领取成功',
+        message: `成功领取 ${res.data.days} 天卡密！`,
+        cardCode: res.data.cardCode,
+        days: res.data.days
+      }
+      showClaimModal.value = true
     }
     else {
-      error.value = res.data.error || '领取失败'
+      claimModalContent.value = {
+        success: false,
+        title: '领取失败',
+        message: res.data.error || '领取失败，请稍后重试',
+        cardCode: '',
+        days: 0
+      }
+      showClaimModal.value = true
     }
   }
   catch (e: any) {
     const data = e.response?.data
-    error.value = data?.error || e.message || '领取失败'
+    claimModalContent.value = {
+      success: false,
+      title: '领取失败',
+      message: data?.error || e.message || '领取失败',
+      cardCode: '',
+      days: 0
+    }
+    showClaimModal.value = true
   }
   finally {
     cardClaimLoading.value = false
   }
+}
+
+function closeClaimModal() {
+  showClaimModal.value = false
 }
 
 onMounted(() => {
@@ -340,9 +365,22 @@ async function fetchGameVersion() {
               {{ passwordStrength.level }}
             </span>
           </div>
-          <p v-if="!isLogin && passwordStrength.suggestions.length > 0" class="form-hint">
-            💡 建议：{{ passwordStrength.suggestions.join('、') }}
-          </p>
+          <div v-if="error" class="message error-message">
+            <span class="message-icon">⚠️</span>
+            <div class="message-content">
+              {{ error }}
+              <span v-if="lockoutRemaining > 0" class="lockout-timer">
+                ({{ lockoutRemaining }} 分钟后解锁)
+              </span>
+              <span v-if="rateLimitRemaining > 0" class="lockout-timer">
+                ({{ rateLimitRemaining }} 秒后可重试)
+              </span>
+            </div>
+          </div>
+          <div v-if="success" class="message success-message">
+            <span class="message-icon">✅</span>
+            {{ success }}
+          </div>
         </div>
 
         <div v-if="!isLogin" class="form-group">
@@ -370,27 +408,6 @@ async function fetchGameVersion() {
             placeholder="请输入卡密"
             :required="!isLogin"
           />
-          <p class="form-hint">
-            💡 请输入有效的时间卡密进行注册
-          </p>
-        </div>
-
-        <div v-if="error" class="message error-message">
-          <span class="message-icon">⚠️</span>
-          <div class="message-content">
-            {{ error }}
-            <span v-if="lockoutRemaining > 0" class="lockout-timer">
-              ({{ lockoutRemaining }} 分钟后解锁)
-            </span>
-            <span v-if="rateLimitRemaining > 0" class="lockout-timer">
-              ({{ rateLimitRemaining }} 秒后可重试)
-            </span>
-          </div>
-        </div>
-
-        <div v-if="success" class="message success-message">
-          <span class="message-icon">✅</span>
-          {{ success }}
         </div>
 
         <BaseButton
@@ -435,6 +452,44 @@ async function fetchGameVersion() {
         </div>
       </div>
     </div>
+
+    <!-- 卡密领取结果弹窗 -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div
+          v-if="showClaimModal"
+          class="claim-modal-overlay"
+          @click.self="closeClaimModal"
+        >
+          <div class="claim-modal">
+            <div class="claim-modal-header">
+              <span class="claim-modal-icon">{{ claimModalContent.success ? '🎉' : '⚠️' }}</span>
+              <h3 class="claim-modal-title">
+                {{ claimModalContent.title }}
+              </h3>
+            </div>
+            <div class="claim-modal-body">
+              <p class="claim-modal-message">
+                {{ claimModalContent.message }}
+              </p>
+              <div v-if="claimModalContent.success && claimModalContent.cardCode" class="claim-modal-card-info">
+                <div class="card-code-label">
+                  卡密已自动填入
+                </div>
+                <div class="card-code-value">
+                  {{ claimModalContent.cardCode }}
+                </div>
+              </div>
+            </div>
+            <div class="claim-modal-footer">
+              <button class="claim-modal-btn" @click="closeClaimModal">
+                {{ claimModalContent.success ? '开始注册' : '我知道了' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -1004,6 +1059,214 @@ async function fetchGameVersion() {
   .plant-2,
   .plant-6 {
     font-size: 2rem;
+  }
+}
+
+/* 卡密领取结果弹窗样式 */
+.claim-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+  backdrop-filter: blur(4px);
+}
+
+.claim-modal {
+  background: white;
+  border-radius: 20px;
+  max-width: 360px;
+  width: 100%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  animation: modalSlideIn 0.3s ease;
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.claim-modal-header {
+  text-align: center;
+  padding: 24px 20px 16px;
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+}
+
+.claim-modal-icon {
+  font-size: 3rem;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.claim-modal-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #2e7d32;
+  margin: 0;
+}
+
+.claim-modal-body {
+  padding: 20px;
+  text-align: center;
+}
+
+.claim-modal-message {
+  font-size: 1rem;
+  color: #37474f;
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+
+.claim-modal-card-info {
+  background: linear-gradient(135deg, #f5f5f5 0%, #e8e8e8 100%);
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 8px;
+}
+
+.card-code-label {
+  font-size: 0.75rem;
+  color: #66bb6a;
+  margin-bottom: 8px;
+}
+
+.card-code-value {
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #2e7d32;
+  background: white;
+  padding: 8px 12px;
+  border-radius: 8px;
+  word-break: break-all;
+}
+
+.claim-modal-footer {
+  padding: 0 20px 20px;
+}
+
+.claim-modal-btn {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #7cb342 0%, #558b2f 100%);
+  border: none;
+  border-radius: 12px;
+  color: white;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.claim-modal-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(124, 179, 66, 0.4);
+}
+
+.claim-modal-btn:active {
+  transform: translateY(0);
+}
+
+/* 弹窗过渡动画 */
+.modal-enter-active,
+.modal-leave-active {
+  transition: all 0.3s ease;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+.modal-enter-from .claim-modal,
+.modal-leave-to .claim-modal {
+  transform: translateY(-20px) scale(0.95);
+}
+
+/* 暗色模式适配弹窗 */
+@media (prefers-color-scheme: dark) {
+  .claim-modal {
+    background: #1e3c28;
+  }
+
+  .claim-modal-header {
+    background: linear-gradient(135deg, #1e4d2b 0%, #2e5a3a 100%);
+  }
+
+  .claim-modal-title {
+    color: #81c784;
+  }
+
+  .claim-modal-message {
+    color: #a5d6a7;
+  }
+
+  .claim-modal-card-info {
+    background: linear-gradient(135deg, #1a3a2a 0%, #2a4a3a 100%);
+  }
+
+  .card-code-label {
+    color: #66bb6a;
+  }
+
+  .card-code-value {
+    background: #0d2818;
+    color: #81c784;
+  }
+}
+
+/* 移动端弹窗优化 */
+@media (max-width: 480px) {
+  .claim-modal-overlay {
+    padding: 16px;
+    align-items: flex-end;
+  }
+
+  .claim-modal {
+    border-radius: 20px 20px 0 0;
+    max-width: 100%;
+    animation: modalSlideUp 0.3s ease;
+  }
+
+  @keyframes modalSlideUp {
+    from {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .claim-modal-header {
+    padding: 20px 16px 12px;
+  }
+
+  .claim-modal-icon {
+    font-size: 2.5rem;
+  }
+
+  .claim-modal-body {
+    padding: 16px;
+  }
+
+  .claim-modal-footer {
+    padding: 0 16px 16px;
+  }
+
+  .claim-modal-btn {
+    padding: 12px;
   }
 }
 </style>

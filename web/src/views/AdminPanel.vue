@@ -285,6 +285,34 @@ async function copyCode(code: string) {
   }
 }
 
+async function copySelectedCards() {
+  const codes = Array.from(selectedCards.value)
+  if (codes.length === 0) return
+  
+  try {
+    const text = codes.join('\n')
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text)
+      toast.success(`已复制 ${codes.length} 个卡密到剪贴板`)
+    }
+    else {
+      const textArea = document.createElement('textarea')
+      textArea.value = text
+      textArea.style.position = 'fixed'
+      textArea.style.opacity = '0'
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      toast.success(`已复制 ${codes.length} 个卡密到剪贴板`)
+      document.body.removeChild(textArea)
+    }
+  }
+  catch (e) {
+    toast.error('复制失败，请手动复制')
+    console.error('复制失败:', e)
+  }
+}
+
 function formatDate(timestamp: number | null) {
   if (!timestamp)
     return '-'
@@ -297,6 +325,13 @@ function formatDateForFile(timestamp: number) {
 }
 
 function getCardTypeLabel(card: Card) {
+  if (card.type === 'quota') {
+    return '额度'
+  }
+  return '时间'
+}
+
+function getCardValueLabel(card: Card) {
   if (card.type === 'quota') {
     return `+${card.days}额度`
   }
@@ -917,6 +952,9 @@ onMounted(() => {
             <span style="color: var(--theme-primary);">
               已选择 {{ selectedCards.size }} 个卡密
             </span>
+            <BaseButton variant="secondary" size="sm" @click="copySelectedCards">
+              一键复制
+            </BaseButton>
             <BaseButton variant="danger" size="sm" @click="deleteSelectedCards">
               批量删除
             </BaseButton>
@@ -954,6 +992,9 @@ onMounted(() => {
                     </th>
                     <th class="px-4 py-2 text-left text-xs text-gray-500 font-medium dark:text-gray-300">
                       类型
+                    </th>
+                    <th class="px-4 py-2 text-left text-xs text-gray-500 font-medium dark:text-gray-300">
+                      数值
                     </th>
                     <th class="px-4 py-2 text-left text-xs text-gray-500 font-medium dark:text-gray-300">
                       状态
@@ -996,6 +1037,9 @@ onMounted(() => {
                         {{ getCardTypeLabel(card) }}
                       </span>
                     </td>
+                    <td class="whitespace-nowrap px-4 py-2 text-sm text-gray-900 dark:text-white">
+                      {{ getCardValueLabel(card) }}
+                    </td>
                     <td class="whitespace-nowrap px-4 py-2">
                       <span
                         class="inline-flex rounded-full px-2 py-0.5 text-xs"
@@ -1026,7 +1070,7 @@ onMounted(() => {
                     </td>
                   </tr>
                   <tr v-if="filteredCards.length === 0">
-                    <td colspan="9" class="px-4 py-4 text-center text-gray-500 dark:text-gray-400">
+                    <td colspan="10" class="px-4 py-4 text-center text-gray-500 dark:text-gray-400">
                       暂无卡密
                     </td>
                   </tr>
