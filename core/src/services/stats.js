@@ -178,11 +178,11 @@ function updateStats(currentGold, currentExp) {
         const delta = currentExp - lastState.exp;
         const now = Date.now();
         if (delta === session.lastExpGain && (now - (session.lastExpTime || 0) < 1000)) {
-            console.warn(`[系统] 忽略重复经验增量 +${delta}`);
+            // console.warn(`[系统] 忽略重复经验增量 +${delta}`);
         } else {
             session.lastExpGain = delta;
             session.lastExpTime = now;
-            console.warn(`[系统] 经验 +${delta} (总计: ${currentExp})`);
+            // console.warn(`[系统] 经验 +${delta} (总计: ${currentExp})`);
         }
     } else {
         session.lastExpGain = 0;

@@ -13,6 +13,7 @@ const {
     getPlantBlacklist,
     getKnownFriendGids,
     getKnownFriendGidSyncCooldownSec,
+    getFriendsListCacheTtlSec,
     applyConfigSnapshot,
 } = require('../models/store');
 const { sendMsgAsync, getUserState, networkEvents } = require('../utils/network');
@@ -34,7 +35,12 @@ const friendScheduler = createScheduler('friend');
 // 好友列表缓存
 let friendsListCache = null;
 let friendsListCacheTime = 0;
-const FRIENDS_LIST_CACHE_TTL_MS = 60 * 1000; // 缓存 60 秒
+
+function getFriendsListCacheTtlMs() {
+    const sec = Number(getFriendsListCacheTtlSec ? getFriendsListCacheTtlSec() : 0);
+    if (!Number.isFinite(sec) || sec <= 0) return 60 * 1000;
+    return Math.max(10 * 1000, sec * 1000);
+}
 
 const operationLimits = new Map();
 
@@ -215,7 +221,7 @@ async function syncKnownFriendGidsFromRecentVisitors(force = false) {
             }
             log('好友', `已从最近访客自动补充 ${addedCount} 个 GID，当前已知好友 GID 共 ${merged.length} 个`, {
                 module: 'friend',
-                event: 'visitor_gid_sync',
+                event: '访客补充好友GID',
                 result: 'ok',
                 addedFromVisitors: addedCount,
                 totalKnownGids: merged.length,
@@ -233,7 +239,7 @@ async function syncKnownFriendGidsFromRecentVisitors(force = false) {
         }
         logWarn('好友', `同步最近访客 GID 失败: ${e.message}`, {
             module: 'friend',
-            event: 'visitor_gid_sync',
+            event: '同步好友GID',
             result: 'error',
         });
         return getEffectiveKnownQqFriendGids();
@@ -263,7 +269,7 @@ function removeKnownFriendGid(friendGid, friendName, reason = '') {
 
     logWarn('好友', `检测到失效好友 GID，已自动移除: ${friendName || `GID:${gid}`}`, {
         module: 'friend',
-        event: 'known_friend_gid_remove',
+        event: '检测失效好友GID',
         result: 'auto_removed',
         friendName: friendName || `GID:${gid}`,
         friendGid: gid,
@@ -383,7 +389,7 @@ async function fetchQqFriendsByKnownGids() {
         } catch (e) {
             logWarn('好友', `QQ 新好友接口分批请求失败(${i + 1}-${i + batch.length}/${knownGids.length}): ${e.message}`, {
                 module: 'friend',
-                event: 'friend_list_fetch',
+                event: '好友列表接口',
                 result: 'error',
                 method: 'GetGameFriends',
                 batchSize: batch.length,
@@ -464,7 +470,7 @@ async function getAllFriends(forceSync = false) {
             } else if (getEffectiveKnownQqFriendGids().length === 0) {
                 logWarn('好友', 'QQ 好友列表为空；若近期接口已切到 GetGameFriends，请先在好友页维护已知好友 GID 列表', {
                     module: 'friend',
-                    event: 'friend_list_fetch',
+                    event: '好友列表接口',
                     result: 'empty',
                 });
             }
@@ -868,12 +874,8 @@ async function getFriendsList(forceSync = false) {
     try {
         // 检查缓存
         const now = Date.now();
-        if (!forceSync && friendsListCache && (now - friendsListCacheTime) < FRIENDS_LIST_CACHE_TTL_MS) {
-            log('好友', '使用好友列表缓存', {
-                module: 'friend',
-                event: '获取好友列表',
-                result: 'cache_hit',
-            });
+        if (!forceSync && friendsListCache && (now - friendsListCacheTime) < getFriendsListCacheTtlMs()) {
+
             return friendsListCache;
         }
 
@@ -1109,7 +1111,7 @@ async function doFriendOperation(friendGid, opType) {
         if (opType === 'steal') {
             if (!status.stealable.length) return { ok: true, opType, count: 0, message: '没有可偷取土地' };
             const precheck = await checkCanOperateRemote(gid, 10008);
-            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: '今日偷菜次数已用完' };
+            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: 'Ta已经被偷的精光了QAQ' };
             const maxNum = precheck.canStealNum > 0 ? precheck.canStealNum : status.stealable.length;
             const target = status.stealable.slice(0, maxNum);
             count = await runBatchWithFallback(target, (ids) => stealHarvest(gid, ids), (ids) => stealHarvest(gid, ids));
@@ -1133,7 +1135,7 @@ async function doFriendOperation(friendGid, opType) {
         if (opType === 'water') {
             if (!status.needWater.length) return { ok: true, opType, count: 0, message: '没有可浇水土地' };
             const precheck = await checkCanOperateRemote(gid, 10007);
-            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: '今日浇水次数已用完' };
+            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: '浇水失败，来晚一步，可惜' };
             count = await runBatchWithFallback(status.needWater, (ids) => helpWater(gid, ids), (ids) => helpWater(gid, ids));
             if (count > 0) recordOperation('helpWater', count);
             return { ok: true, opType, count, message: `浇水完成 ${count} 块` };
@@ -1142,7 +1144,7 @@ async function doFriendOperation(friendGid, opType) {
         if (opType === 'weed') {
             if (!status.needWeed.length) return { ok: true, opType, count: 0, message: '没有可除草土地' };
             const precheck = await checkCanOperateRemote(gid, 10005);
-            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: '今日除草次数已用完' };
+            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: '除草失败，来晚一步，可惜' };
             count = await runBatchWithFallback(status.needWeed, (ids) => helpWeed(gid, ids), (ids) => helpWeed(gid, ids));
             if (count > 0) recordOperation('helpWeed', count);
             return { ok: true, opType, count, message: `除草完成 ${count} 块` };
@@ -1151,7 +1153,7 @@ async function doFriendOperation(friendGid, opType) {
         if (opType === 'bug') {
             if (!status.needBug.length) return { ok: true, opType, count: 0, message: '没有可除虫土地' };
             const precheck = await checkCanOperateRemote(gid, 10006);
-            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: '今日除虫次数已用完' };
+            if (!precheck.canOperate) return { ok: true, opType, count: 0, message: '除虫失败，来晚一步，可惜' };
             count = await runBatchWithFallback(status.needBug, (ids) => helpInsecticide(gid, ids), (ids) => helpInsecticide(gid, ids));
             if (count > 0) recordOperation('helpBug', count);
             return { ok: true, opType, count, message: `除虫完成 ${count} 块` };
@@ -1218,7 +1220,7 @@ async function visitFriend(friend, totalActions, myGid, accountId) {
             return { acted: false, entered: false };
         }
         logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
-            module: 'friend', event: 'enter_farm', result: 'error', friendName: name, friendGid: gid
+            module: 'friend', event: '进入农场', result: 'error', friendName: name, friendGid: gid
         });
         return { acted: false, entered: false };
     }
@@ -1338,7 +1340,7 @@ async function visitFriend(friend, totalActions, myGid, accountId) {
 
     if (actions.length > 0) {
         log('好友', `${name}: ${actions.join('/')}`, {
-            module: 'friend', event: 'visit_friend', result: 'ok', friendName: name, friendGid: gid, actions
+            module: 'friend', event: '照顾好友', result: 'ok', friendName: name, friendGid: gid, actions
         });
     }
 
@@ -1360,7 +1362,7 @@ async function visitFriendForSteal(friend, totalActions, myGid, accountId) {
             return { acted: false, entered: false };
         }
         logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
-            module: 'friend', event: 'enter_farm', result: 'error', friendName: name, friendGid: gid
+            module: 'friend', event: '进入农场', result: 'error', friendName: name, friendGid: gid
         });
         return { acted: false, entered: false };
     }
@@ -1442,7 +1444,7 @@ async function visitFriendForSteal(friend, totalActions, myGid, accountId) {
 
     if (actions.length > 0) {
         log('好友', `${name}: ${actions.join('/')}`, {
-            module: 'friend', event: 'steal_friend', result: 'ok', friendName: name, friendGid: gid, actions
+            module: 'friend', event: '偷好友菜', result: 'ok', friendName: name, friendGid: gid, actions
         });
     }
 
@@ -1470,7 +1472,7 @@ async function visitFriendForHelp(friend, totalActions, myGid, accountId, ignore
             return { acted: false, entered: false };
         }
         logWarn('好友', `进入 ${name} 农场失败: ${e.message}`, {
-            module: 'friend', event: 'enter_farm', result: 'error', friendName: name, friendGid: gid
+            module: 'friend', event: '进入农场', result: 'error', friendName: name, friendGid: gid
         });
         return { acted: false, entered: false };
     }
@@ -1513,7 +1515,7 @@ async function visitFriendForHelp(friend, totalActions, myGid, accountId, ignore
 
     if (actions.length > 0) {
         log('好友', `${name}: ${actions.join('/')}`, {
-            module: 'friend', event: 'help_friend', result: 'ok', friendName: name, friendGid: gid, actions
+            module: 'friend', event: '帮助好友', result: 'ok', friendName: name, friendGid: gid, actions
         });
     }
 
@@ -1553,7 +1555,7 @@ async function checkFriends(options = {}) {
         const friendsReply = await getAllFriends();
         const friends = extractReplyFriends(friendsReply);
         if (friends.length === 0) {
-            log('好友', '没有好友', { module: 'friend', event: 'friend_scan', result: 'empty' });
+            log('好友', '没有好友', { module: 'friend', event: '好友扫描', result: 'empty' });
             return false;
         }
 
@@ -1740,44 +1742,6 @@ async function checkFriends(options = {}) {
 }
 
 /**
- * 批量好友操作（一键帮助/一键偷取/一键捣乱）
- * @param {string} opType - 操作类型: 'help' | 'steal' | 'bad'
- */
-async function doBatchFriendOp(opType) {
-    const state = getUserState();
-    if (!state.gid) {
-        return { ok: false, error: '未登录' };
-    }
-
-    const validTypes = ['help', 'steal', 'bad'];
-    if (!validTypes.includes(opType)) {
-        return { ok: false, error: `无效的操作类型: ${opType}` };
-    }
-
-    const typeLabels = { help: '帮助', steal: '偷取', bad: '捣乱' };
-    log('好友', `开始一键${typeLabels[opType]}`, { module: 'friend', event: `一键${typeLabels[opType]}开始`, opType });
-
-    try {
-        if (opType === 'bad') {
-            // 捣乱操作使用单独的逻辑
-            badExecutedOnStartup = false; // 重置标记允许再次执行
-            await runBadOnceOnStartup();
-            return { ok: true };
-        } else {
-            const result = await checkFriends({
-                onlyHelp: opType === 'help',
-                onlySteal: opType === 'steal',
-                ignoreExpLimit: opType === 'help',
-            });
-            return { ok: true, result };
-        }
-    } catch (e) {
-        logWarn('好友', `一键${typeLabels[opType]}失败: ${e.message}`);
-        return { ok: false, error: e.message };
-    }
-}
-
-/**
  * 好友巡查循环 - 本次完成后等待指定秒数再开始下次
  */
 async function friendCheckLoop() {
@@ -1901,7 +1865,7 @@ async function runBadOnceOnStartup() {
         const friendsReply = await getAllFriends();
         const friends = extractReplyFriends(friendsReply);
         if (friends.length === 0) {
-            log('好友', '没有好友，放虫放草结束', { module: 'friend', event: 'bad_no_friends' });
+            log('好友', '没有好友，放虫放草结束', { module: 'friend', event: '没有游戏好友' });
             return;
         }
 
@@ -1999,6 +1963,5 @@ module.exports = {
     getFriendsList,
     getFriendLandsDetail,
     doFriendOperation,
-    doBatchFriendOp,
     clearFriendsListCache,
 };

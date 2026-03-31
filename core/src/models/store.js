@@ -63,6 +63,7 @@ const DEFAULT_FERTILIZER_LAND_TYPES = ['gold', 'black', 'red', 'normal'];
 const FERTILIZER_LAND_TYPE_SET = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
 const INTERVAL_MAX_SEC = 86400;
 const DEFAULT_KNOWN_FRIEND_GID_SYNC_COOLDOWN_SEC = 300;
+const DEFAULT_FRIENDS_LIST_CACHE_TTL_SEC = 60;
 
 function normalizeKnownFriendGids(input, fallback = []) {
     const source = Array.isArray(input) ? input : fallback;
@@ -80,6 +81,12 @@ function normalizeKnownFriendGidSyncCooldownSec(input, fallback = DEFAULT_KNOWN_
     const value = Number.parseInt(input, 10);
     const base = Number.isFinite(value) ? value : fallback;
     return Math.max(30, Math.min(INTERVAL_MAX_SEC, base));
+}
+
+function normalizeFriendsListCacheTtlSec(input, fallback = DEFAULT_FRIENDS_LIST_CACHE_TTL_SEC) {
+    const value = Number.parseInt(input, 10);
+    const base = Number.isFinite(value) ? value : fallback;
+    return Math.max(10, Math.min(INTERVAL_MAX_SEC, base));
 }
 
 function normalizeBagSeedPriority(input) {
@@ -157,6 +164,7 @@ const DEFAULT_ACCOUNT_CONFIG = {
     },
     knownFriendGids: [],
     knownFriendGidSyncCooldownSec: DEFAULT_KNOWN_FRIEND_GID_SYNC_COOLDOWN_SEC,
+    friendsListCacheTtlSec: DEFAULT_FRIENDS_LIST_CACHE_TTL_SEC,
     friendBlacklist: [],
     // 蔬菜黑名单（偷菜时不偷的作物 seedId 列表）
     plantBlacklist: [
@@ -175,15 +183,15 @@ const DEFAULT_ACCOUNT_CONFIG = {
     // 自己农田种植时每块地间隔秒数（0=使用默认50ms）
     plantDelaySeconds: 2,
     // 有机化肥购买数量
-    fertilizerBuyOrganicCount: 10,
+    fertilizerBuyOrganicCount: 1,
     // 有机化肥自动购买触发阈值（小时）
     fertilizerBuyOrganicThresholdHours: 10,
     // 无机化肥购买数量
-    fertilizerBuyNormalCount: 10,
+    fertilizerBuyNormalCount: 1,
     // 无机化肥自动购买触发阈值（小时）
     fertilizerBuyNormalThresholdHours: 10,
     // 化肥自动购买检测间隔（分钟）
-    fertilizerBuyCheckIntervalMinutes: 30,
+    fertilizerBuyCheckIntervalMinutes: 60,
     // 背包种子优先顺序（seedId 数组）
     bagSeedPriority: [],
     // 背包种子用完后的回退策略
@@ -199,6 +207,7 @@ let accountFallbackConfig = {
     friendQuietHours: { ...DEFAULT_ACCOUNT_CONFIG.friendQuietHours },
     knownFriendGids: [],
     knownFriendGidSyncCooldownSec: DEFAULT_KNOWN_FRIEND_GID_SYNC_COOLDOWN_SEC,
+    friendsListCacheTtlSec: DEFAULT_FRIENDS_LIST_CACHE_TTL_SEC,
 };
 
 const globalConfig = {
@@ -298,6 +307,7 @@ function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
 
     const knownFriendGids = normalizeKnownFriendGids(base.knownFriendGids);
     const knownFriendGidSyncCooldownSec = normalizeKnownFriendGidSyncCooldownSec(base.knownFriendGidSyncCooldownSec);
+    const friendsListCacheTtlSec = normalizeFriendsListCacheTtlSec(base.friendsListCacheTtlSec);
 
     // 蔬菜黑名单
     const rawPlantBlacklist = Array.isArray(base.plantBlacklist) ? base.plantBlacklist : [];
@@ -309,6 +319,7 @@ function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
         friendQuietHours: { ...(base.friendQuietHours || DEFAULT_ACCOUNT_CONFIG.friendQuietHours) },
         knownFriendGids,
         knownFriendGidSyncCooldownSec,
+        friendsListCacheTtlSec,
         friendBlacklist: rawBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
         plantingStrategy: ALLOWED_PLANTING_STRATEGIES.includes(String(base.plantingStrategy || ''))
             ? String(base.plantingStrategy)
@@ -394,6 +405,13 @@ function normalizeAccountConfig(input, fallback = accountFallbackConfig) {
         cfg.knownFriendGidSyncCooldownSec = normalizeKnownFriendGidSyncCooldownSec(
             src.knownFriendGidSyncCooldownSec,
             cfg.knownFriendGidSyncCooldownSec,
+        );
+    }
+
+    if (src.friendsListCacheTtlSec !== undefined) {
+        cfg.friendsListCacheTtlSec = normalizeFriendsListCacheTtlSec(
+            src.friendsListCacheTtlSec,
+            cfg.friendsListCacheTtlSec,
         );
     }
 
@@ -664,6 +682,7 @@ function getConfigSnapshot(accountId) {
         friendQuietHours: { ...cfg.friendQuietHours },
         knownFriendGids: [...(cfg.knownFriendGids || [])],
         knownFriendGidSyncCooldownSec: cfg.knownFriendGidSyncCooldownSec,
+        friendsListCacheTtlSec: cfg.friendsListCacheTtlSec,
         friendBlacklist: [...(cfg.friendBlacklist || [])],
         plantBlacklist: [...(cfg.plantBlacklist || [])],
         stealDelaySeconds: Math.max(0, Math.min(300, Number(cfg.stealDelaySeconds) || 0)),
@@ -743,6 +762,13 @@ function applyConfigSnapshot(snapshot, options = {}) {
         next.knownFriendGidSyncCooldownSec = normalizeKnownFriendGidSyncCooldownSec(
             cfg.knownFriendGidSyncCooldownSec,
             next.knownFriendGidSyncCooldownSec,
+        );
+    }
+
+    if (cfg.friendsListCacheTtlSec !== undefined) {
+        next.friendsListCacheTtlSec = normalizeFriendsListCacheTtlSec(
+            cfg.friendsListCacheTtlSec,
+            next.friendsListCacheTtlSec,
         );
     }
 
@@ -928,6 +954,21 @@ function setKnownFriendGidSyncCooldownSec(accountId, sec) {
     }, accountFallbackConfig);
     setAccountConfigSnapshot(accountId, next, true);
     return next.knownFriendGidSyncCooldownSec;
+}
+
+function getFriendsListCacheTtlSec(accountId) {
+    return normalizeFriendsListCacheTtlSec(getAccountConfigSnapshot(accountId).friendsListCacheTtlSec);
+}
+
+function setFriendsListCacheTtlSec(accountId, sec) {
+    const current = getAccountConfigSnapshot(accountId);
+    const normalized = normalizeFriendsListCacheTtlSec(sec, current.friendsListCacheTtlSec);
+    const next = normalizeAccountConfig({
+        ...current,
+        friendsListCacheTtlSec: normalized,
+    }, accountFallbackConfig);
+    setAccountConfigSnapshot(accountId, next, true);
+    return next.friendsListCacheTtlSec;
 }
 
 function getFriendBlacklist(accountId) {
@@ -1265,6 +1306,8 @@ module.exports = {
     setKnownFriendGids,
     getKnownFriendGidSyncCooldownSec,
     setKnownFriendGidSyncCooldownSec,
+    getFriendsListCacheTtlSec,
+    setFriendsListCacheTtlSec,
     getFriendBlacklist,
     setFriendBlacklist,
     addFriendToBlacklist,

@@ -672,14 +672,14 @@ const systemConfigLoading = ref(false)
 
 const localSystemConfig = ref({
   serverUrl: 'wss://gate-obt.nqf.qq.com/prod/ws',
-  clientVersion: '1.7.0.7_20260313',
+  clientVersion: '1.7.0.9_20260313',
   platform: 'qq',
   os: 'iOS',
 })
 
 const defaultSystemConfig = ref({
   serverUrl: 'wss://gate-obt.nqf.qq.com/prod/ws',
-  clientVersion: '1.7.0.7_20260313',
+  clientVersion: '1.7.0.9_20260313',
   platform: 'qq',
   os: 'iOS',
 })
@@ -1519,7 +1519,7 @@ onMounted(() => {
                   v-model="localSystemConfig.clientVersion"
                   label="客户端版本"
                   type="text"
-                  placeholder="1.7.0.7_20260313"
+                  placeholder="1.7.0.9_20260313"
                   class="col-span-2"
                 />
                 <div class="flex flex-col gap-1.5">

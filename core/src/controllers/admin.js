@@ -819,28 +819,6 @@ function startAdminServer(dataProvider) {
         }
     });
 
-    // API: 好友批量操作（一键帮助/一键偷取/一键捣乱）
-    app.post('/api/friends/batch-op', async (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
-
-        // 检查权限
-        if (!checkAccountAccess(req, id)) {
-            return res.status(403).json({ ok: false, error: '无权访问此账号' });
-        }
-
-        try {
-            const opType = String((req.body || {}).opType || '');
-            if (!opType) {
-                return res.status(400).json({ ok: false, error: '缺少 opType 参数' });
-            }
-            const data = await provider.doBatchFriendOp(id, opType);
-            res.json({ ok: true, data });
-        } catch (e) {
-            handleApiError(res, e);
-        }
-    });
-
     // API: 好友黑名单
     app.get('/api/friend-blacklist', async (req, res) => {
         const id = getAccId(req);
@@ -955,6 +933,9 @@ function startAdminServer(dataProvider) {
             knownFriendGidSyncCooldownSec: store.getKnownFriendGidSyncCooldownSec
                 ? store.getKnownFriendGidSyncCooldownSec(accountId)
                 : 600,
+            friendsListCacheTtlSec: store.getFriendsListCacheTtlSec
+                ? store.getFriendsListCacheTtlSec(accountId)
+                : 60,
         };
     }
 
@@ -993,40 +974,8 @@ function startAdminServer(dataProvider) {
             if (body.knownFriendGidSyncCooldownSec !== undefined && store.setKnownFriendGidSyncCooldownSec) {
                 store.setKnownFriendGidSyncCooldownSec(id, body.knownFriendGidSyncCooldownSec);
             }
-            // 同步配置到 worker 进程
-            if (provider && typeof provider.broadcastConfig === 'function') {
-                provider.broadcastConfig(id);
-            }
-            return res.json({ ok: true, data: buildKnownFriendGidSettings(id) });
-        } catch (e) {
-            return handleApiError(res, e);
-        }
-    });
-
-    // 添加单个好友GID
-    app.post('/api/friend-known-gids/add', (req, res) => {
-        const id = getAccId(req);
-        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
-
-        // 检查权限
-        if (!checkAccountAccess(req, id)) {
-            return res.status(403).json({ ok: false, error: '无权访问此账号' });
-        }
-
-        const gid = Number((req.body || {}).gid);
-        if (!Number.isFinite(gid) || gid <= 0) {
-            return res.status(400).json({ ok: false, error: 'GID 无效' });
-        }
-
-        try {
-            const current = store.getKnownFriendGids ? store.getKnownFriendGids(id) : [];
-            const next = Array.isArray(current) ? [...current, gid] : [gid];
-            if (store.setKnownFriendGids) {
-                store.setKnownFriendGids(id, next);
-            }
-            const cooldownSec = (req.body || {}).knownFriendGidSyncCooldownSec;
-            if (cooldownSec !== undefined && store.setKnownFriendGidSyncCooldownSec) {
-                store.setKnownFriendGidSyncCooldownSec(id, cooldownSec);
+            if (body.friendsListCacheTtlSec !== undefined && store.setFriendsListCacheTtlSec) {
+                store.setFriendsListCacheTtlSec(id, body.friendsListCacheTtlSec);
             }
             // 同步配置到 worker 进程
             if (provider && typeof provider.broadcastConfig === 'function') {

@@ -188,16 +188,19 @@ function formatBucketTime(item: any) {
 
 // Next Check Countdown
 const nextFarmCheck = ref('--:--:--')
-const nextFriendCheck = ref('--:--:--')
+const nextHelpCheck = ref('--:--:--')
+const nextStealCheck = ref('--:--:--')
 const localUptime = ref(0)
 let localNextFarmRemainSec = 0
-let localNextFriendRemainSec = 0
+let localNextHelpRemainSec = 0
+let localNextStealRemainSec = 0
 
 function updateCountdowns() {
   // Update uptime
   if (!status.value?.connection?.connected) {
     nextFarmCheck.value = '账号未登录'
-    nextFriendCheck.value = '账号未登录'
+    nextHelpCheck.value = '账号未登录'
+    nextStealCheck.value = '账号未登录'
   }
   else {
     localUptime.value++
@@ -209,12 +212,20 @@ function updateCountdowns() {
       nextFarmCheck.value = '巡查中...'
     }
 
-    if (localNextFriendRemainSec > 0) {
-      localNextFriendRemainSec--
-      nextFriendCheck.value = formatDuration(localNextFriendRemainSec)
+    if (localNextHelpRemainSec > 0) {
+      localNextHelpRemainSec--
+      nextHelpCheck.value = formatDuration(localNextHelpRemainSec)
     }
     else {
-      nextFriendCheck.value = '巡查中...'
+      nextHelpCheck.value = '巡查中...'
+    }
+
+    if (localNextStealRemainSec > 0) {
+      localNextStealRemainSec--
+      nextStealCheck.value = formatDuration(localNextStealRemainSec)
+    }
+    else {
+      nextStealCheck.value = '巡查中...'
     }
   }
 }
@@ -225,7 +236,8 @@ watch(status, (newVal) => {
     // Actually, we should sync from server periodically.
     // Here we just take server value when it comes.
     localNextFarmRemainSec = newVal.nextChecks.farmRemainSec || 0
-    localNextFriendRemainSec = newVal.nextChecks.friendRemainSec || 0
+    localNextHelpRemainSec = newVal.nextChecks.helpRemainSec || 0
+    localNextStealRemainSec = newVal.nextChecks.stealRemainSec || 0
     updateCountdowns() // Update immediately
   }
   if (newVal?.uptime !== undefined) {
@@ -697,10 +709,19 @@ useIntervalFn(updateCountdowns, 1000)
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
                 <div class="i-carbon-user-multiple text-lg text-blue-500" />
-                <span>好友</span>
+                <span>帮助</span>
               </div>
               <div class="text-lg font-bold font-mono">
-                {{ nextFriendCheck }}
+                {{ nextHelpCheck }}
+              </div>
+            </div>
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2 text-gray-700 dark:text-gray-300">
+                <div class="i-carbon-run text-lg text-orange-500" />
+                <span>偷菜</span>
+              </div>
+              <div class="text-lg font-bold font-mono">
+                {{ nextStealCheck }}
               </div>
             </div>
           </div>

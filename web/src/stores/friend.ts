@@ -11,6 +11,7 @@ export interface BlacklistItem {
 export interface KnownFriendSettings {
   knownFriendGids: number[]
   knownFriendGidSyncCooldownSec: number
+  friendsListCacheTtlSec: number
 }
 
 export const useFriendStore = defineStore('friend', () => {
@@ -25,6 +26,7 @@ export const useFriendStore = defineStore('friend', () => {
 
   const knownFriendGids = ref<number[]>([])
   const knownFriendGidSyncCooldownSec = ref(600)
+  const friendsListCacheTtlSec = ref(60)
   const knownFriendSettingsLoading = ref(false)
   const knownFriendSettingsSaving = ref(false)
 
@@ -167,27 +169,20 @@ export const useFriendStore = defineStore('friend', () => {
 
   async function operate(accountId: string, friendId: string, opType: string) {
     if (!accountId || !friendId)
-      return
-    await api.post(`/api/friend/${friendId}/op`, { opType }, {
-      headers: { 'x-account-id': accountId },
-    })
-    await fetchFriends(accountId)
-    if (friendLands.value[friendId]) {
-      await fetchFriendLands(accountId, friendId)
-    }
-  }
-
-  async function batchOperate(accountId: string, opType: string) {
-    if (!accountId)
-      return { ok: false, error: 'Missing accountId' }
+      return { ok: false, message: '参数无效' }
     try {
-      const res = await api.post('/api/friends/batch-op', { opType }, {
+      const res = await api.post(`/api/friend/${friendId}/op`, { opType }, {
         headers: { 'x-account-id': accountId },
       })
-      return res.data
+      const result = res.data?.data || res.data || {}
+      await fetchFriends(accountId)
+      if (friendLands.value[friendId]) {
+        await fetchFriendLands(accountId, friendId)
+      }
+      return result
     }
     catch (e: any) {
-      return { ok: false, error: e?.message || '请求失败' }
+      return { ok: false, message: e?.response?.data?.error || e?.message || '操作失败' }
     }
   }
 
@@ -198,6 +193,9 @@ export const useFriendStore = defineStore('friend', () => {
     knownFriendGidSyncCooldownSec.value = Number.isFinite(data.knownFriendGidSyncCooldownSec)
       ? Math.max(30, Math.min(86400, data.knownFriendGidSyncCooldownSec))
       : 600
+    friendsListCacheTtlSec.value = Number.isFinite(data.friendsListCacheTtlSec)
+      ? Math.max(10, Math.min(86400, data.friendsListCacheTtlSec))
+      : 60
   }
 
   async function fetchKnownFriendSettings(accountId: string) {
@@ -223,27 +221,6 @@ export const useFriendStore = defineStore('friend', () => {
     knownFriendSettingsSaving.value = true
     try {
       const res = await api.post('/api/friend-known-gids', payload, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (res.data.ok) {
-        applyKnownFriendSettings(res.data.data)
-      }
-    }
-    finally {
-      knownFriendSettingsSaving.value = false
-    }
-  }
-
-  async function addKnownFriendGid(accountId: string, gid: number, cooldownSec?: number) {
-    if (!accountId || !gid)
-      return
-    knownFriendSettingsSaving.value = true
-    try {
-      const payload: any = { gid }
-      if (cooldownSec !== undefined) {
-        payload.knownFriendGidSyncCooldownSec = cooldownSec
-      }
-      const res = await api.post('/api/friend-known-gids/add', payload, {
         headers: { 'x-account-id': accountId },
       })
       if (res.data.ok) {
@@ -319,6 +296,7 @@ export const useFriendStore = defineStore('friend', () => {
     interactError,
     knownFriendGids,
     knownFriendGidSyncCooldownSec,
+    friendsListCacheTtlSec,
     knownFriendSettingsLoading,
     knownFriendSettingsSaving,
     fetchFriends,
@@ -327,10 +305,8 @@ export const useFriendStore = defineStore('friend', () => {
     fetchInteractRecords,
     fetchFriendLands,
     operate,
-    batchOperate,
     fetchKnownFriendSettings,
     saveKnownFriendSettings,
-    addKnownFriendGid,
     removeKnownFriendGid,
     batchAddKnownFriendGids,
     removeUnsyncedKnownFriendGids,

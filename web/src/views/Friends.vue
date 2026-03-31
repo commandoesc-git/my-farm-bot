@@ -26,6 +26,7 @@ const {
   interactError,
   knownFriendGids,
   knownFriendGidSyncCooldownSec,
+  friendsListCacheTtlSec,
   knownFriendSettingsLoading,
   knownFriendSettingsSaving,
 } = storeToRefs(friendStore)
@@ -96,12 +97,11 @@ const activeTab = ref<TabKey>('friends')
 const showConfirm = ref(false)
 const confirmMessage = ref('')
 const confirmLoading = ref(false)
-const pendingAction = ref<(() => Promise<void>) | null>(null)
+const pendingAction = ref<(() => Promise<any>) | null>(null)
 const avatarErrorKeys = ref<Set<string>>(new Set())
 const searchKeyword = ref('')
-const batchLoading = ref(false)
-const newKnownFriendGid = ref('')
 const localKnownFriendGidSyncCooldownSec = ref(300)
+const localFriendsListCacheTtlSec = ref(60)
 const showBatchAddGidModal = ref(false)
 const batchGidInput = ref('')
 const showGidListModal = ref(false)
@@ -115,7 +115,7 @@ const interactFilters = [
   { key: 'bad', label: '捣乱' },
 ]
 
-function confirmAction(msg: string, action: () => Promise<void>) {
+function confirmAction(msg: string, action: () => Promise<any>) {
   confirmMessage.value = msg
   pendingAction.value = action
   showConfirm.value = true
@@ -126,11 +126,14 @@ async function onConfirm() {
     try {
       confirmLoading.value = true
       await pendingAction.value()
-      pendingAction.value = null
-      showConfirm.value = false
+    }
+    catch (e: any) {
+      toast.error(e?.message || '操作失败')
     }
     finally {
       confirmLoading.value = false
+      pendingAction.value = null
+      showConfirm.value = false
     }
   }
   else {
@@ -268,9 +271,33 @@ async function handleOp(friendId: string, type: string, e: Event) {
   if (!currentAccountId.value)
     return
 
-  confirmAction('确定执行此操作吗?', async () => {
-    await friendStore.operate(currentAccountId.value!, friendId, type)
-  })
+  const opNames: Record<string, string> = {
+    steal: '偷取',
+    water: '浇水',
+    weed: '除草',
+    bug: '除虫',
+    bad: '捣乱',
+  }
+
+  if (type === 'bad') {
+    confirmAction('确定对好友执行捣乱操作吗?', async () => {
+      toast.info('已在捣乱中，间隔较长，请稍后返回好友土地查看')
+      friendStore.operate(currentAccountId.value!, friendId, type)
+      return { ok: true }
+    })
+  }
+  else {
+    confirmAction(`确定对好友执行${opNames[type] || type}操作吗?`, async () => {
+      const result = await friendStore.operate(currentAccountId.value!, friendId, type)
+      if (result?.ok) {
+        toast.success(result.message || `${opNames[type] || type}完成`)
+      }
+      else {
+        toast.error(result?.message || `${opNames[type] || type}失败`)
+      }
+      return result
+    })
+  }
 }
 
 async function handleToggleBlacklist(friend: any, e: Event) {
@@ -348,39 +375,6 @@ async function handleRemoveFromBlacklist(gid: number) {
   if (!currentAccountId.value)
     return
   await friendStore.toggleBlacklist(currentAccountId.value, gid)
-}
-
-async function handleBatchOp(opType: 'help' | 'steal' | 'bad') {
-  if (!currentAccountId.value || batchLoading.value)
-    return
-
-  const opNames: Record<string, string> = {
-    help: '一键帮助',
-    steal: '一键偷取',
-    bad: '一键捣乱',
-  }
-
-  const action = async () => {
-    batchLoading.value = true
-    try {
-      const res = await friendStore.batchOperate(currentAccountId.value!, opType)
-      if (res.ok) {
-        toast.success(`${opNames[opType]}完成`)
-        await friendStore.fetchFriends(currentAccountId.value!)
-      }
-      else {
-        toast.error(res.error || `${opNames[opType]}失败`)
-      }
-    }
-    catch (e: any) {
-      toast.error(e?.message || `${opNames[opType]}失败`)
-    }
-    finally {
-      batchLoading.value = false
-    }
-  }
-
-  confirmAction(`确定执行${opNames[opType]}吗？`, action)
 }
 
 async function refreshInteractRecords() {
@@ -475,19 +469,11 @@ function normalizeKnownFriendGidSyncCooldownSec(value: number) {
   return Math.max(30, Math.min(86400, v))
 }
 
-async function handleAddKnownFriendGid() {
-  if (!currentAccountId.value)
-    return
-  const gid = Number.parseInt(String(newKnownFriendGid.value || ''), 10)
-  if (!Number.isFinite(gid) || gid <= 0) {
-    toast.error('请输入有效的 GID')
-    return
-  }
-  const cooldownSec = normalizeKnownFriendGidSyncCooldownSec(localKnownFriendGidSyncCooldownSec.value)
-  await friendStore.addKnownFriendGid(currentAccountId.value, gid, cooldownSec)
-  newKnownFriendGid.value = ''
-  await refreshFriendsAfterKnownGidChange()
-  toast.success(`已加入同步列表: ${gid}`)
+function normalizeFriendsListCacheTtlSec(value: number) {
+  const v = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(v) || v <= 0)
+    return 60
+  return Math.max(10, Math.min(86400, v))
 }
 
 async function handleRemoveKnownFriendGid(friend: any, e: Event) {
@@ -516,15 +502,21 @@ async function handleSaveKnownFriendSettings() {
   if (!currentAccountId.value)
     return
   const cooldownSec = normalizeKnownFriendGidSyncCooldownSec(localKnownFriendGidSyncCooldownSec.value)
+  const cacheTtlSec = normalizeFriendsListCacheTtlSec(localFriendsListCacheTtlSec.value)
   await friendStore.saveKnownFriendSettings(currentAccountId.value, {
     knownFriendGidSyncCooldownSec: cooldownSec,
+    friendsListCacheTtlSec: cacheTtlSec,
   })
   toast.success('设置已保存')
 }
 
 watch(knownFriendGidSyncCooldownSec, (val) => {
   localKnownFriendGidSyncCooldownSec.value = val
-})
+}, { immediate: true })
+
+watch(friendsListCacheTtlSec, (val) => {
+  localFriendsListCacheTtlSec.value = val
+}, { immediate: true })
 
 function parseBatchGids(input: string): number[] {
   const text = String(input || '').trim()
@@ -685,33 +677,22 @@ async function handleBatchAddKnownFriendGids() {
             </div>
           </div>
 
-          <div class="grid mt-4 gap-3 lg:grid-cols-[minmax(0,1fr)_220px_auto]">
-            <div>
-              <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">新增 GID</label>
-              <input
-                v-model="newKnownFriendGid"
-                type="number"
-                placeholder="输入好友 GID"
-                class="w-full border border-gray-300 rounded-lg bg-white px-3 py-2 text-sm dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-            </div>
+          <div class="mt-4 grid gap-3 lg:grid-cols-2">
             <div>
               <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">访客检测入库冷却(秒)</label>
               <input
                 v-model.number="localKnownFriendGidSyncCooldownSec"
                 type="number"
-                placeholder="600"
                 class="w-full border border-gray-300 rounded-lg bg-white px-3 py-2 text-sm dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
             </div>
-            <div class="flex items-end">
-              <button
-                class="rounded bg-green-500 px-4 py-2 text-sm text-white transition hover:bg-green-600 disabled:opacity-50"
-                :disabled="knownFriendSettingsSaving || !newKnownFriendGid"
-                @click="handleAddKnownFriendGid"
+            <div>
+              <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">好友列表缓存(秒)</label>
+              <input
+                v-model.number="localFriendsListCacheTtlSec"
+                type="number"
+                class="w-full border border-gray-300 rounded-lg bg-white px-3 py-2 text-sm dark:border-gray-600 focus:border-blue-500 dark:bg-gray-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
-                新增 GID
-              </button>
             </div>
           </div>
         </div>
@@ -722,31 +703,6 @@ async function handleBatchAddKnownFriendGids() {
 
         <template v-else>
           <div class="flex flex-wrap items-center gap-2 rounded-lg bg-white p-3 shadow dark:bg-gray-800">
-            <span class="flex items-center text-sm text-gray-500 dark:text-gray-400">批量操作：</span>
-            <button
-              class="rounded bg-green-100 px-3 py-1.5 text-sm text-green-700 transition dark:bg-green-900/30 hover:bg-green-200 dark:text-green-400 disabled:opacity-50 dark:hover:bg-green-900/50"
-              :disabled="batchLoading"
-              @click="handleBatchOp('help')"
-            >
-              <div v-if="batchLoading" class="i-svg-spinners-90-ring-with-bg mr-1 inline-block align-text-bottom" />
-              一键帮助
-            </button>
-            <button
-              class="rounded bg-blue-100 px-3 py-1.5 text-sm text-blue-700 transition dark:bg-blue-900/30 hover:bg-blue-200 dark:text-blue-400 disabled:opacity-50 dark:hover:bg-blue-900/50"
-              :disabled="batchLoading"
-              @click="handleBatchOp('steal')"
-            >
-              <div v-if="batchLoading" class="i-svg-spinners-90-ring-with-bg mr-1 inline-block align-text-bottom" />
-              一键偷取
-            </button>
-            <button
-              class="rounded bg-red-100 px-3 py-1.5 text-sm text-red-700 transition dark:bg-red-900/30 hover:bg-red-200 dark:text-red-400 disabled:opacity-50 dark:hover:bg-red-900/50"
-              :disabled="batchLoading"
-              @click="handleBatchOp('bad')"
-            >
-              <div v-if="batchLoading" class="i-svg-spinners-90-ring-with-bg mr-1 inline-block align-text-bottom" />
-              一键捣乱
-            </button>
             <div class="flex-1" />
             <button
               class="rounded bg-gray-100 px-3 py-1.5 text-sm text-gray-600 transition dark:bg-gray-700 hover:bg-gray-200 dark:text-gray-300 disabled:opacity-50 dark:hover:bg-gray-600"

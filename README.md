@@ -2,13 +2,10 @@
 
 - 基于 Node.js 的 QQ 农场自动化工具，支持多账号管理、Web 控制面板、实时日志与数据分析。
 - 基于[Penty-d/qq-farm-bot-ui](https://github.com/Penty-d/qq-farm-bot-ui)项目二开
-- 参考[wjnnone/qq-farm-bot](https://github.com/wjnnone/qq-farm-bot)部分代码，感谢wjnnone！
-- 感谢[sulimu2/qq-farm-bot](https://github.com/sulimu2/qq-farm-bot)大佬提供的新版协议思路
-- 感谢[DeepFal/qq-farm-bot](https://github.com/DeepFal/qq-farm-bot-ui)大佬提供的背包物品种植和好友思路
-- 建议自己拉项目部署，没有测试过打包的Windows端和Mac端，docker后续整！
-- 更新优化日志详见update.log 感谢支持，喜欢的点一个start吧！
+- 更新优化日志详见update.log 感谢支持，喜欢的点一个star⭐吧！
 - 默认账号密码都是admin，端口3007，请部署登录后尽快修改密码！
 ## QQ通过抓包code登陆，微信提供了可视化接口配置，自己部署协议或者找三方API，并不是内置了微信扫码登陆
+## 这源码估计被官方标记了，再加上官方监测了IP，纯协议登估计嘎嘎了，所以基本上也就到这里了，后续开别怕，怕别开，封别叫就行了
 ## 技术栈
 
 **后端**

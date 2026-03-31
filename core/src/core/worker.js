@@ -621,9 +621,6 @@ async function handleApiCall(msg) {
             case 'doFriendOp':
                 result = await doFriendOperation(args[0], args[1]);
                 break;
-            case 'doBatchFriendOp':
-                result = await require('../services/friend').doBatchFriendOp(args[0]);
-                break;
             case 'getSeeds':
                 result = await getAvailableSeeds();
                 break;
@@ -774,7 +771,7 @@ function syncStatus() {
         farmRemainSec,
         helpRemainSec,
         stealRemainSec,
-        friendRemainSec: Math.min(helpRemainSec, stealRemainSec),
+        friendRemainSec: Math.max(helpRemainSec, stealRemainSec),
     };
 
     fullStats.automation = getAutomation();

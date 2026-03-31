@@ -353,7 +353,7 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
     const fertilizerConfig = automation.fertilizer || 'none';
     const reason = String(options.reason || '').trim().toLowerCase() === 'multi_season' ? 'multi_season' : 'normal';
     const reasonLabel = reason === 'multi_season' ? '多季补肥' : '常规施肥';
-    const eventName = reason === 'multi_season' ? 'fertilize_multi_season' : 'fertilize';
+    const eventName = reason === 'multi_season' ? '多季节施肥' : '常规施肥';
     const selectedLandTypes = normalizeFertilizerLandTypes(automation.fertilizer_land_types);
     const selectedLandTypeNames = formatFertilizerLandTypes(selectedLandTypes);
     const planted = [...new Set((Array.isArray(plantedLands) ? plantedLands : []).map(v => toNum(v)).filter(Boolean))];
@@ -648,7 +648,7 @@ async function plantFromBagSeeds(landsToPlant) {
             ? '背包中没有可用的 1x1 种子，准备按第二优先策略补种'
             : '背包种子已用完，准备按第二优先策略补种', {
             module: 'farm',
-            event: 'plant_seed',
+            event: '种植种子',
             result: 'fallback_ready',
             strategy: 'bag_priority',
         });
@@ -683,7 +683,7 @@ async function plantFromBagSeeds(landsToPlant) {
             fallbackAllowed = false;
             logWarn('种植', `背包种子 ${seed.name} 实际种植 ${result.planted}/${maxPlantCount}，为避免误购商店种子，本轮不执行第二优先策略`, {
                 module: 'farm',
-                event: 'plant_seed',
+                event: '种植种子',
                 result: 'partial_bag_failure',
                 seedId: seed.seedId,
                 requested: maxPlantCount,
@@ -695,7 +695,7 @@ async function plantFromBagSeeds(landsToPlant) {
     if (usedSeedLogs.length > 0) {
         log('种植', `已按背包优先策略种植: ${usedSeedLogs.join('，')}`, {
             module: 'farm',
-            event: 'plant_seed',
+            event: '种植种子',
             result: 'ok',
             strategy: 'bag_priority',
             count: totalPlanted,
@@ -1056,7 +1056,7 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds) {
         } catch (e) {
             logWarn('种植', `读取背包种子失败，本轮跳过第二优先策略以避免误购: ${e.message}`, {
                 module: 'farm',
-                event: 'plant_seed',
+                event: '种植种子',
                 result: 'bag_load_error',
             });
             return { plantedLands: [] };
@@ -1069,7 +1069,7 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds) {
             const fallbackStrategy = getBagSeedFallbackStrategy() || 'level';
             log('种植', `开始按第二优先策略"${getPlantingStrategyLabel(fallbackStrategy)}"补种剩余空地`, {
                 module: 'farm',
-                event: 'plant_seed',
+                event: '种植种子',
                 result: 'fallback_start',
                 strategy: fallbackStrategy,
                 remainingCount: bagResult.remainingLandIds.length,
@@ -1119,7 +1119,7 @@ async function plantFromShop(landsToPlant, state, overrideStrategy) {
         if (needCount <= 0) {
             log('种植', `${seedName} 需要至少 ${landFootprint} 块空地才能合并种植，当前仅 ${landsToPlant.length} 块可用，已跳过`, {
                 module: 'farm',
-                event: 'plant_seed',
+                event: '种植种子',
                 result: 'skip',
                 seedId: bestSeed.seedId,
                 landFootprint,
@@ -1552,7 +1552,7 @@ async function runFarmOperation(opType) {
         if (multiSeasonTargets.length > 0) {
             log('施肥', `检测到多季作物进入后续季，准备执行多季补肥，目标地块 ${multiSeasonTargets.length} 块`, {
                 module: 'farm',
-                event: 'fertilize_multi_season',
+                event: '多季节施肥',
                 result: 'trigger',
                 count: multiSeasonTargets.length,
                 landIds: multiSeasonTargets,
@@ -1562,7 +1562,7 @@ async function runFarmOperation(opType) {
             } catch (e) {
                 logWarn('施肥', `多季补肥执行失败: ${e.message}`, {
                     module: 'farm',
-                    event: 'fertilize_multi_season',
+                    event: '多季节施肥',
                     result: 'error',
                 });
             }
@@ -1700,8 +1700,10 @@ function startFertilizerBuyCheckTimer() {
         clearInterval(fertilizerBuyCheckTimer);
     }
     
-    // 立即检测一次
-    checkFertilizerBuyOnce();
+    // 检查是否有开启的化肥购买功能
+    if (!isAutomationOn('fertilizer_buy_organic') && !isAutomationOn('fertilizer_buy_normal')) {
+        return;
+    }
     
     // 设置定时检测
     const intervalMinutes = getFertilizerBuyCheckIntervalMinutes();
@@ -1713,7 +1715,7 @@ function startFertilizerBuyCheckTimer() {
     
     log('农场', `化肥自动购买检测定时器已启动，间隔 ${intervalMinutes} 分钟`, {
         module: 'farm',
-        event: 'fertilizer_buy_timer',
+        event: '购买化肥计时器',
         result: 'start',
         intervalMinutes,
     });
@@ -1726,7 +1728,7 @@ function stopFertilizerBuyCheckTimer() {
     }
     log('农场', '化肥自动购买检测定时器已停止', {
         module: 'farm',
-        event: 'fertilizer_buy_timer',
+        event: '购买化肥计时器',
         result: 'stop',
     });
 }
