@@ -437,15 +437,6 @@ async function fetchGameVersion() {
         <span>🌻 愿你的农场丰收满满 🌻</span>
         <div class="footer-info">
           <span class="version">v{{ appVersion }}</span>
-          <span class="separator">|</span>
-          <a
-            href="https://github.com/XyhTender/qq-farm-automation-bot"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="github-link"
-          >
-            GitHub
-          </a>
         </div>
         <div v-if="gameVersion" class="game-version">
           当前游戏版本：{{ gameVersion }}

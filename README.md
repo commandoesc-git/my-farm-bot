@@ -1,11 +1,9 @@
 # QQ 农场多账号挂机 + Web 面板
 
-- 基于 Node.js 的 QQ 农场自动化工具，支持多账号管理、Web 控制面板、实时日志与数据分析。
-- 基于[Penty-d/qq-farm-bot-ui](https://github.com/Penty-d/qq-farm-bot-ui)项目二开
-- 更新优化日志详见update.log 感谢支持，喜欢的点一个star⭐吧！
-- 默认账号密码都是admin，端口3007，请部署登录后尽快修改密码！
-## QQ通过抓包code登陆，微信提供了可视化接口配置，自己部署协议或者找三方API，并不是内置了微信扫码登陆
-## 这源码估计被官方标记了，再加上官方监测了IP，纯协议登估计嘎嘎了，所以基本上也就到这里了，后续开别怕，怕别开，封别叫就行了
+基于 Node.js 的 QQ 农场自动化工具，支持多账号管理、Web 控制面板、实时日志与数据分析。
+
+> 默认账号密码都是 `admin`，端口 `3007`，请部署登录后尽快修改密码！
+
 ## 技术栈
 
 **后端**
@@ -22,23 +20,19 @@
 [<img src="https://cdn.simpleicons.org/pinia/FFD859" height="48" title="Pinia 3" />](https://pinia.vuejs.org/)
 [<img src="https://skillicons.dev/icons?i=unocss" height="48" title="UnoCSS" />](https://unocss.dev/)
 
-**部署**
-
-[<img src="https://skillicons.dev/icons?i=pnpm" height="48" title="pnpm 10" />](https://pnpm.io/)
-[<img src="https://skillicons.dev/icons?i=githubactions" height="48" title="GitHub Actions" />](https://github.com/features/actions)
-
 ---
 
 ## 功能特性
+
 ### 功能截图
-<img src="https://free.picui.cn/free/2026/03/27/69c638ef27e36.png"  alt="图片失效"/>
-<img src="https://free.picui.cn/free/2026/03/27/69c638eff412b.png"  alt="图片失效"/>
-<img src="https://free.picui.cn/free/2026/03/27/69c638f005734.png"  alt="图片失效"/>
-<img src="https://free.picui.cn/free/2026/03/27/69c638f02d18d.png"  alt="图片失效"/>
+<img src="https://free.picui.cn/free/2026/03/27/69c638ef27e36.png" alt="图片失效"/>
+<img src="https://free.picui.cn/free/2026/03/27/69c638eff412b.png" alt="图片失效"/>
+<img src="https://free.picui.cn/free/2026/03/27/69c638f005734.png" alt="图片失效"/>
+<img src="https://free.picui.cn/free/2026/03/27/69c638f02d18d.png" alt="图片失效"/>
 
 ### 多账号管理
 - 账号新增、编辑、删除、启动、停止
-- QQ只能抓包code，微信提供了可视化接口配置，自己部署协议或者找三方API，并不是内置了微信扫码登陆
+- QQ 只能抓包 code，微信提供了可视化接口配置
 - 账号被踢下线自动删除
 - 账号连续离线超时自动删除
 - 账号离线推送通知（支持 Bark、自定义 Webhook 等）
@@ -64,102 +58,64 @@
 
 ---
 
-## 环境要求
+## Docker 部署（推荐）
 
-- 源码运行：Node.js 20+，pnpm（推荐通过 `corepack enable` 启用）
-- 二进制发布版：无需安装 Node.js
+### 前置要求
+- 已安装 [Docker](https://docs.docker.com/get-docker/) 及 Docker Compose
 
-## 安装与启动（源码方式）
+### 快速启动
 
-### Windows
-
-```powershell
-# 1. 安装 Node.js 20+（https://nodejs.org/）并启用 pnpm
-node -v
-corepack enable
-pnpm -v
-
-# 2. 安装依赖并构建前端
-cd D:\Projects\qq-farm-bot-ui
-pnpm install
-pnpm build:web
-
-# 3. 启动
-pnpm dev:core
-
-# （可选）设置其他端口后启动
-$env:ADMIN_PORT="你的新端口"
-pnpm dev:core
-```
-
-### Linux（Ubuntu/Debian）
-建议使用宝塔最为便捷，在网站其他项目选项中按照如图所示去部署即可
-
-<img src="https://free.picui.cn/free/2026/03/27/69c6398dd326c.png"  alt="图片失效"/>
-
-启动后访问面板：
-- 本机：`http://localhost:3007`
-- 局域网：`http://<你的IP>:3007`
-
----
-
-## Docker 部署（拉取不了镜像直接下载压缩包解压即可）
-```
-# 拉取仓库
+```bash
+# 1. 克隆仓库
 git clone https://github.com/XyhTender/qq-farm-automation-bot.git
+cd qq-farm-automation-bot
 
-# 进入目录
-cd /qq-farm-automation-bot-main
+# 2. 构建并后台启动
+docker compose up -d --build
 
-# 构建并后台启动
-docker compose -f docker-compose.yml up -d --build
-
-# 查看日志
+# 3. 查看实时日志
 docker compose logs -f
 
-# 停止并移除容器
+# 4. 停止并移除容器
 docker compose down
-
-# 浏览器访问http://你的IP:3007
 ```
 
-## 二进制发布版（无需 Node.js）
+浏览器访问 `http://你的IP:3007`
 
-### 构建
+### 环境变量（可选）
+
+在项目根目录创建或编辑 `.env` 文件：
+
+```env
+# 修改面板监听端口（默认 3007）
+PORT=3007
+# 时区（默认 Asia/Shanghai）
+TZ=Asia/Shanghai
+```
+
+### 数据持久化
+
+容器使用 Docker Volume 持久化数据，重建容器不会丢失账号和配置：
+
+| Volume | 用途 |
+|--------|------|
+| `qq-farm-data` | 账号、配置等运行时数据 |
+| `qq-farm-logs` | 运行日志 |
 
 ```bash
-pnpm install
-pnpm package:release
+# 查看 Volume
+docker volume ls | grep qq-farm
+
+# 备份数据
+docker run --rm -v qq-farm-data:/data -v $(pwd):/backup alpine tar czf /backup/qq-farm-backup.tar.gz /data
 ```
-
-产物输出在 `dist/` 目录：
-- `产物在Releases中也可以下载，无需自己构建`
-
-| 平台 | 文件名 |
-|------|--------|
-| Windows x64 | `qq-farm-bot.exe` |
-| Linux x64 | `qq-farm-bot` |
-| macOS Intel | `qq-farm-bot-x64` |
-| macOS Apple Silicon | `qq-farm-bot-arm64` |
-
-### 运行
-
-```bash
-# Windows：双击 exe 或在终端执行
-.\qq-farm-bot-win-x64.exe
-
-# Linux / macOS
-chmod +x ./qq-farm-bot && ./qq-farm-bot
-```
-
-程序会在可执行文件同级目录自动创建 `data/` 并写入 `store.json`、`accounts.json`。
 
 ---
 
 ## 登录与安全
 
 - 面板首次访问需要登录
-- 默认管理账号：`admin/admin`
+- 默认管理账号：`admin / admin`
 - **建议部署后立即修改为强密码**
 
 ---
@@ -167,7 +123,7 @@ chmod +x ./qq-farm-bot && ./qq-farm-bot
 ## 项目结构
 
 ```
-qq-farm-bot-ui/
+qq-farm-automation-bot/
 ├── core/                  # 后端（Node.js 机器人引擎）
 │   ├── src/
 │   │   ├── config/        # 配置管理
@@ -178,6 +134,7 @@ qq-farm-bot-ui/
 │   │   ├── runtime/       # 运行时引擎与 Worker 管理
 │   │   └── services/      # 业务逻辑（农场、好友、任务等）
 │   ├── data/              # 运行时数据（accounts.json、store.json）
+│   ├── Dockerfile
 │   └── client.js          # 主进程入口
 ├── web/                   # 前端（Vue 3 + Vite）
 │   ├── src/
@@ -186,6 +143,7 @@ qq-farm-bot-ui/
 │   │   ├── stores/        # Pinia 状态管理
 │   │   └── views/         # 页面视图
 │   └── dist/              # 构建产物
+├── docker-compose.yml
 ├── pnpm-workspace.yaml
 └── package.json
 ```
@@ -193,7 +151,7 @@ qq-farm-bot-ui/
 ---
 
 ## 特别感谢
-- 基于[Penty-d/qq-farm-bot-ui](https://github.com/Penty-d/qq-farm-bot-ui)二改
+- 基于 [Penty-d/qq-farm-bot-ui](https://github.com/Penty-d/qq-farm-bot-ui) 二改
 - 核心功能：[linguo2625469/qq-farm-bot](https://github.com/linguo2625469/qq-farm-bot)
 - 部分功能：[QianChenJun/qq-farm-bot](https://github.com/QianChenJun/qq-farm-bot)
 - 扫码登录：[lkeme/QRLib](https://github.com/lkeme/QRLib)

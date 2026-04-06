@@ -13,12 +13,21 @@ export default defineConfig({
   plugins: [
     vue(),
     UnoCSS() as any,
+    // gzip 压缩
     viteCompression({
-      verbose: true,
+      verbose: false,
       disable: false,
       threshold: 10240,
       algorithm: 'gzip',
       ext: '.gz',
+    }),
+    // brotli 压缩（体积比 gzip 小约 15-20%）
+    viteCompression({
+      verbose: false,
+      disable: false,
+      threshold: 10240,
+      algorithm: 'brotliCompress',
+      ext: '.br',
     }),
     visualizer({
       open: false,
@@ -27,27 +36,33 @@ export default defineConfig({
     }),
   ],
   build: {
+    minify: 'esbuild',
     rollupOptions: {
       output: {
+        assetFileNames: 'assets/[ext]/[name]-[hash][extname]',
+        chunkFileNames: 'assets/js/[name]-[hash].js',
+        entryFileNames: 'assets/js/[name]-[hash].js',
         manualChunks(id) {
           if (id.includes('node_modules')) {
             if (id.includes('vue') || id.includes('pinia') || id.includes('vue-router') || id.includes('@vueuse')) {
               return 'vendor-vue'
             }
+            if (id.includes('socket.io')) {
+              return 'vendor-socketio'
+            }
             if (id.includes('axios')) {
               return 'vendor-axios'
             }
-            // Split other large dependencies if needed
             if (id.includes('echarts') || id.includes('zrender')) {
               return 'vendor-echarts'
             }
-            // Default vendor chunk
             return 'vendor'
           }
         },
       },
     },
     chunkSizeWarningLimit: 1000,
+    modulePreload: { polyfill: true },
   },
   define: {
     __APP_VERSION__: JSON.stringify(corePackageJson.version),

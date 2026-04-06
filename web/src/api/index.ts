@@ -10,6 +10,23 @@ const api = axios.create({
   timeout: 10000,
 })
 
+// GET 请求去重：同一 URL+账号 并发时复用同一个 Promise，避免重复请求
+const pendingRequests = new Map<string, Promise<any>>()
+
+const originalGet = api.get.bind(api)
+api.get = function deduplicatedGet(url: string, config?: any) {
+  const accountId = accountIdRef.value || ''
+  const key = `${url}|${accountId}`
+  if (pendingRequests.has(key)) {
+    return pendingRequests.get(key)!
+  }
+  const promise = originalGet(url, config).finally(() => {
+    pendingRequests.delete(key)
+  })
+  pendingRequests.set(key, promise)
+  return promise
+} as typeof api.get
+
 api.interceptors.request.use((config) => {
   const token = tokenRef.value
   if (token) {

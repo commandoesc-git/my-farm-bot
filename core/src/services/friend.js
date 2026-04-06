@@ -1055,7 +1055,13 @@ async function getFriendLandsDetail(friendGid) {
             lands: landsList,
             summary: analyzed,
         };
-    } catch {
+    } catch (e) {
+        logWarn('好友', `获取好友农田详情失败: ${e.message}`, {
+            module: 'friend',
+            event: '获取好友农田详情',
+            result: 'error',
+            error: e.message,
+        });
         return { lands: [], summary: {} };
     }
 }

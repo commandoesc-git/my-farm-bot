@@ -123,18 +123,8 @@ export const useAppStore = defineStore('app', () => {
     sidebarOpen.value = true
   }
 
-  async function fetchTheme() {
-    // 从服务器获取主题设置（可选）
-    try {
-      const res = await api.get('/api/settings')
-      if (res.data.ok && res.data.data.ui?.theme) {
-        // 如果服务器有主题设置，可以选择使用
-        // 但优先使用本地存储的主题
-      }
-    }
-    catch {
-      // 未登录时静默失败，使用本地缓存值
-    }
+  function fetchTheme() {
+    // 主题从 localStorage 读取，无需请求服务器
   }
 
   function applyTheme(theme: Theme) {

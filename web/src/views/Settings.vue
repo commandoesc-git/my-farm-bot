@@ -108,7 +108,7 @@ onMounted(async () => {
 
 useIntervalFn(() => {
   accountStore.fetchAccounts()
-}, 3000)
+}, 8000)
 
 function openSettings(account: any) {
   accountStore.selectAccount(account.id)
